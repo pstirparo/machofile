@@ -35,9 +35,9 @@ This is the very first/alpha version still (2023.10.10), so please let me know i
 
 ## Credits
 Those are the people that I would like to thank for being the inspiration that led me to write this module:
-- Ero Carrera ((@erocarrera)[https://twitter.com/erocarrera]) for writing and maintaining the [pefile](https://github.com/erocarrera/pefile/tree/master) module
-- Patrick Wardle ((@patrickwardle)[https://twitter.com/patrickwardle]) for the great work in sharing his macOS malware analysis and research, and brigning to life (OBTS)[https://objectivebythesea.org/] :)
-- Greg Lesnewich ((@greglesnewich)[https://twitter.com/greglesnewich]) for his work on (macho-similarty)[https://github.com/g-les/macho_similarity]
+- Ero Carrera ([@erocarrera](https://twitter.com/erocarrera)) for writing and maintaining the [pefile](https://github.com/erocarrera/pefile/tree/master) module
+- Patrick Wardle ([@patrickwardle](https://twitter.com/patrickwardle)) for the great work in sharing his macOS malware analysis and research, and brigning to life [OBTS](https://objectivebythesea.org/) :)
+- Greg Lesnewich ([@greglesnewich](https://twitter.com/greglesnewich)) for his work on [macho-similarty](https://github.com/g-les/macho_similarity)
 
 ## Usage and example
 You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
