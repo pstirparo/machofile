@@ -19,6 +19,7 @@ This is the very first/alpha version still (2023.10.10), so please let me know i
 - Parse File Segments
 - Parse Dylib Commands
 - Parse Dylib List
+__Note: as of now, this has initially be tested against x86 and x86_64 Mach-O samples.__
 
 **Next features to be implemented:**
 - extract Entry Point 
