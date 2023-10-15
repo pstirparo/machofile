@@ -88,6 +88,24 @@ SEGMENT_COMMAND_FORMAT_32 = "16sIIIIIIII"
 SEGMENT_COMMAND_FORMAT_64 = "16sQQQQIIII"
 DYLIB_COMMAND_FORMAT = "IIII"
 
+STRUCT_SIZEOF_TYPES = {
+    "x": 1,
+    "c": 1,
+    "b": 1,
+    "B": 1,
+    "h": 2,
+    "H": 2,
+    "i": 4,
+    "I": 4,
+    "l": 4,
+    "L": 4,
+    "f": 4,
+    "q": 8,
+    "Q": 8,
+    "d": 8,
+    "s": 1,
+}
+
 # Mach-O constants and mappings
 MH_MAGIC = 0xFEEDFACE  # Big endian, 32 bit Mach-O
 MH_CIGAM = 0xCEFAEDFE  # Little endian, 32 bit Mach-O
