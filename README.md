@@ -11,7 +11,7 @@ While there are other mach-o parsing modules out there, the motivations behind d
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is the very first/alpha version still (2023.10.10), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
+This is the very first/alpha version still (2023.11.04), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
 
 **Current Features:**
 - Parse Mach-O Header
