@@ -44,126 +44,114 @@ Those are the people that I would like to thank for being the inspiration that l
 ## Usage and example
 You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
 
+### Module version
+It expect to be supplied with either a file path or a data buffer to parse.
+
+```
+import machofile
+macho = MachO(file_path='/path/to/machobinary')
+macho = MachO('/path/to/machobinary')
+```
+The above two lines are equivalent and would load the Mach-O file and parse it.
+If the data buffer is already available, it can be supplied directly with:
+
+```
+import machofile
+macho = MachO(data=bytes_variable)
+```
+
+You will then need to invoke the `parse()` method to start the parsing process,
+and can then call each function individually to parse only the structures you are interested in.
+
+```
+macho.parse()
+dylib_cmd_list, dylib_lst = macho.get_dylib_commands()
+...
+```
+
+### Command Line version
 From CLI, at the moment it just retrieves all the structures parsed, in the future there will be flags to just get one specific structure or a list of them.
 ```
-% python3 machofile.py -h
-usage: machofile.py [-h] -f FILE
+% python3 machofile-cli.py -h
+usage: machofile-cli.py [-h] -f FILE [-a] [-i] [-hd] [-l] [-sg] [-d]
 
 Parse Mach-O file structures.
 
 options:
   -h, --help            show this help message and exit
   -f FILE, --file FILE  Path to the file to be parsed
+  -a, --all             Print all info about the file
+  -i, --info            Print general info about the file
+  -hd, --header         Print Mach-O header info
+  -l, --load_cmd_t      Print Load Command Table and Command list
+  -sg, --segments       Print File Segments info
+  -d, --dylib           Print Dylib Command Table and Dylib list
 ```
 
 Example output:
 ```
-% python3 machofile.py ./b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+% python3 machofile-cli.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b 
 
-Getting general info...
-	MD5: : 20ffe440e4f557b9e03855b5da2b3c9c
-	SHA256: : b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+[General File Info]
+        Filename:    b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+        Filesize:    54240
+        Filetype:    Mach-O i386 executable
+        Flags:       <NOUNDEFS|DYLDLINK|TWOLEVEL>
+        MD5:         20ffe440e4f557b9e03855b5da2b3c9c
+        SHA1:        1bf61ecad8568a774f9fba726a254a9603d09f33
+        SHA256:      b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
 
-Parsing Mac-O Header...
-	magic: MH_MAGIC (32-bit)
-	cputype: Intel i386
-	cpusubtype: x86_ALL, x86_64_H, x86_64_LIB64
-	filetype: MH_EXECUTE
-	ncmds: 13
-	sizeofcmds: 1180
-	flags: MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL
+[Mac-O Header]
+        magic:       MH_MAGIC (32-bit)
+        cputype:     Intel i386
+        cpusubtype:  x86_ALL, x86_64_H, x86_64_LIB64
+        filetype:    MH_EXECUTE
+        ncmds:       13
+        sizeofcmds:  1180
+        flags:       MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL
 
-Parsing Load Cmd table...
-	{'cmd': 'LC_SEGMENT', 'cmdsize': 56}
-	{'cmd': 'LC_SEGMENT', 'cmdsize': 192}
-	{'cmd': 'LC_SEGMENT', 'cmdsize': 328}
-	{'cmd': 'LC_SEGMENT', 'cmdsize': 192}
-	{'cmd': 'LC_SEGMENT', 'cmdsize': 56}
-	{'cmd': 'LC_SYMTAB', 'cmdsize': 24}
-	{'cmd': 'LC_DYSYMTAB', 'cmdsize': 80}
-	{'cmd': 'LC_LOAD_DYLINKER', 'cmdsize': 28}
-	{'cmd': 'LC_UUID', 'cmdsize': 24}
-	{'cmd': 'LC_UNIXTHREAD', 'cmdsize': 80}
-	{'cmd': 'LC_LOAD_DYLIB', 'cmdsize': 52}
-	{'cmd': 'LC_LOAD_DYLIB', 'cmdsize': 52}
-	{'cmd': 'LC_CODE_SIGNATURE', 'cmdsize': 16}
+[Load Cmd table]
+        {'cmd': 'LC_SEGMENT', 'cmdsize': 56}
+        {'cmd': 'LC_SEGMENT', 'cmdsize': 192}
+        {'cmd': 'LC_SEGMENT', 'cmdsize': 328}
+        {'cmd': 'LC_SEGMENT', 'cmdsize': 192}
+        {'cmd': 'LC_SEGMENT', 'cmdsize': 56}
+        {'cmd': 'LC_SYMTAB', 'cmdsize': 24}
+        {'cmd': 'LC_DYSYMTAB', 'cmdsize': 80}
+        {'cmd': 'LC_LOAD_DYLINKER', 'cmdsize': 28}
+        {'cmd': 'LC_UUID', 'cmdsize': 24}
+        {'cmd': 'LC_UNIXTHREAD', 'cmdsize': 80}
+        {'cmd': 'LC_LOAD_DYLIB', 'cmdsize': 52}
+        {'cmd': 'LC_LOAD_DYLIB', 'cmdsize': 52}
+        {'cmd': 'LC_CODE_SIGNATURE', 'cmdsize': 16}
 
-Load Commands:
-	LC_CODE_SIGNATURE
-	LC_DYSYMTAB
-	LC_LOAD_DYLIB
-	LC_LOAD_DYLINKER
-	LC_SYMTAB
-	LC_UNIXTHREAD
-	LC_UUID
+[Load Commands]
+        LC_CODE_SIGNATURE
+        LC_DYSYMTAB
+        LC_LOAD_DYLIB
+        LC_LOAD_DYLINKER
+        LC_SYMTAB
+        LC_UNIXTHREAD
+        LC_UUID
 
-File Segments:
-	segname: __PAGEZERO
-	vaddr: 0
-	vsize: 4096
-	offset: 0
-	size: 0
-	max_vm_protection: 0
-	initial_vm_protection: 0
-	nsects: 0
-	flags: 0
+[File Segments]
+        SEGNAME    VADDR VSIZE OFFSET SIZE  MAX_VM_PROTECTION INITIAL_VM_PROTECTION NSECTS FLAGS
+        ----------------------------------------------------------------------------------------
+        __PAGEZERO 0     4096  0      0     0                 0                     0      0    
+        __TEXT     4096  28672 0      28672 7                 5                     2      0    
+        __DATA     32768 4096  28672  4096  7                 3                     4      0    
+        __IMPORT   36864 4096  32768  4096  7                 7                     2      0    
+        __LINKEDIT 40960 20480 36864  17376 7                 1                     0      0    
 
-	segname: __TEXT
-	vaddr: 4096
-	vsize: 28672
-	offset: 0
-	size: 28672
-	max_vm_protection: 7
-	initial_vm_protection: 5
-	nsects: 2
-	flags: 0
+[Dylib Commands]
+        DYLIB_NAME_OFFSET DYLIB_TIMESTAMP DYLIB_CURRENT_VERSION DYLIB_COMPAT_VERSION DYLIB_NAME                   
+        ----------------------------------------------------------------------------------------------------------
+        24                2               65536                 65536                b'/usr/lib/libgcc_s.1.dylib' 
+        24                2               7274759               65536                b'/usr/lib/libSystem.B.dylib'
 
-	segname: __DATA
-	vaddr: 32768
-	vsize: 4096
-	offset: 28672
-	size: 4096
-	max_vm_protection: 7
-	initial_vm_protection: 3
-	nsects: 4
-	flags: 0
-
-	segname: __IMPORT
-	vaddr: 36864
-	vsize: 4096
-	offset: 32768
-	size: 4096
-	max_vm_protection: 7
-	initial_vm_protection: 7
-	nsects: 2
-	flags: 0
-
-	segname: __LINKEDIT
-	vaddr: 40960
-	vsize: 20480
-	offset: 36864
-	size: 17376
-	max_vm_protection: 7
-	initial_vm_protection: 1
-	nsects: 0
-	flags: 0
-
-Parsing Dylib Cmd table...
-	dylib_name_offset: 24
-	dylib_timestamp: 2
-	dylib_current_version: 65536
-	dylib_compat_version: 65536
-	dylib_name: b'/usr/lib/libgcc_s.1.dylib'
-
-	dylib_name_offset: 24
-	dylib_timestamp: 2
-	dylib_current_version: 7274759
-	dylib_compat_version: 65536
-	dylib_name: b'/usr/lib/libSystem.B.dylib'
-
-Parsing Dylib List...
-	b'/usr/lib/libgcc_s.1.dylib'
-	b'/usr/lib/libSystem.B.dylib'
+[Dylib Names]
+        b'/usr/lib/libgcc_s.1.dylib'
+        b'/usr/lib/libSystem.B.dylib'
 ```
 
 ## Reference/Documentation links:
