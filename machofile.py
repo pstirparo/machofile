@@ -67,13 +67,16 @@ Copyright (c) 2023 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # };
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2023.10.10 alpha"
+__version__ = "2023.11.04 alpha"
 __contact__ = "pstirparo@threatresearch.ch"
 
-import argparse
 from hashlib import sha256
 from hashlib import md5
+from hashlib import sha1
 import struct
+import os
+import io
+import magic
 
 
 def two_way_dict(pairs):
@@ -332,295 +335,356 @@ dylib_command_types = [
 DYLIB_CMD_TYPES = two_way_dict(dylib_command_types)
 
 
-def decode_cpusubtype(cputype, cpusubtype_value):
-    mask = 0xFFFFFFFF  # to get unsigned value
-    cpusubtype_value = cpusubtype_value & mask
-    decoded_subtypes = []
+class MachO:
+    """A Mach-O representation.
 
-    # Check if the cpusubtype is combined or singular
-    for subtype, subtype_name in CPU_SUB_TYPE_MAP.items():
-        if cpusubtype_value & subtype:
-            decoded_subtypes.append(subtype_name)
-    return ", ".join(decoded_subtypes) if decoded_subtypes else str(cpusubtype_value)
+    This class represents a Mach-O file, providing methods to parse it and
+    access most of its structures and data.
 
+    It expect to be supplied with either a file path or a data buffer to parse.
 
-def decode_flags(flags_value):
-    decoded_flags = []
-    for flag, flag_name in FLAGS_MAP.items():
-        if flags_value & flag:
-            decoded_flags.append(flag_name)
-    return ", ".join(decoded_flags) if decoded_flags else str(flags_value)
+    macho = MachO(file_path='/path/to/machobinary')
+    macho = MachO('/path/to/machobinary')
 
+    The above two lines are equivalent and would load the Mach-O file and parse it.
+    If the data buffer is already available, it can be supplied directly with:
 
-# This function receives a dictionary as input and prints it in a nice readable way
-def print_dict(d):
-    for k, v in d.items():
-        print(f"\t{k}: {v}")
+    macho = MachO(data=bytes_variable)
 
+    Attributes:
+        general_info: A dictionary containing general information about the Mach-O file.
+        header: A dictionary containing the Mach-O header.
+        load_commands: A list of dictionaries containing the Mach-O load commands.
+        load_commands_set: A set of the Mach-O load commands.
+        segments: A list of dictionaries containing the Mach-O segments.
+        dylib_commands: A list of dictionaries containing the Mach-O dylib commands.
+        dylib_names: A list of the Mach-O dylib names.
+    """
 
-# This function receives a list as input and prints it in a nice readable way
-def print_list(l):
-    for i in l:
-        print(f"\t{i}")
+    def __init__(self, file_path=None, data=None):
+        if file_path is None and data is None:
+            raise ValueError("Must supply either name or data")
+        elif file_path is not None:
+            self.file_path = file_path
+            self.fh = open(file_path, "rb")
+            self.data = self.fh.read()
+            self.fh.close()
+        else:
+            self.data = data
 
+        self.f = io.BytesIO(self.data)
 
-def get_general_info(data):
-    md5_hash = md5()
-    sha256_hash = sha256()
-    md5_hash.update(data)
-    sha256_hash.update(data)
-    return {"MD5: ": md5_hash.hexdigest(), "SHA256: ": sha256_hash.hexdigest()}
+        self.general_info = {}
+        self.header = {}
+        self.load_commands = []
+        self.load_commands_set = set()
+        self.segments = []
+        self.dylib_commands = []
+        self.dylib_names = []
 
+    def parse(self):
+        """Parse a Mach-O file.
 
-def get_macho_header(f):
-    f.seek(0)
-    # Read the magic value to determine byte order
-    magic = struct.unpack("I", f.read(4))[0]
-    byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+        Loads a Mach-O file, parsing all its structures and making them available
+        through the instance's attributes.
+        """
+        self.general_info = self.get_general_info()
+        self.header = self.get_macho_header()
+        self.load_commands, self.load_commands_set = self.get_macho_load_cmd_table()
+        self.segments = self.get_file_segments()
+        self.dylib_commands, self.dylib_names = self.get_dylib_commands()
 
-    # Position back to start of file for full header read
-    f.seek(0)
-    if magic in {MH_MAGIC, MH_CIGAM}:
-        header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
-        header_data = f.read(header_size)
-        header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_32, header_data)
-    else:
-        header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
-        header_data = f.read(header_size)
-        header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
+    def decode_cpusubtype(self, cputype, cpusubtype_value):
+        mask = 0xFFFFFFFF  # to get unsigned value
+        cpusubtype_value = cpusubtype_value & mask
+        decoded_subtypes = []
 
-    header_dict = {
-        "magic": MAGIC_MAP.get(header[0], header[0]),
-        "cputype": CPU_TYPE_MAP.get(header[1], header[1]),
-        "cpusubtype": decode_cpusubtype(header[1], header[2]),
-        "filetype": MACHO_FILETYPE[header[3]],
-        "ncmds": header[4],
-        "sizeofcmds": header[5],
-        "flags": decode_flags(header[6]),
-    }
-
-    return header_dict
-
-
-def get_macho_load_cmd_table(f):
-    load_commands = []
-    f.seek(0)
-    # Read the magic value to determine byte order and architecture
-    magic = struct.unpack("I", f.read(4))[0]
-    byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
-
-    # Depending on architecture, read the correct Mach-O header
-    f.seek(0)
-    if magic in {MH_MAGIC, MH_CIGAM}:
-        header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
-    else:
-        header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
-
-    header_data = f.read(header_size)
-    if magic in {MH_MAGIC, MH_CIGAM}:
-        _, _, _, filetype, ncmds, sizeofcmds, _ = struct.unpack(
-            byte_order + MACHO_HEADER_FORMAT_32, header_data
-        )
-    else:
-        _, _, _, filetype, ncmds, sizeofcmds, _, _ = struct.unpack(
-            byte_order + MACHO_HEADER_FORMAT_64, header_data
+        # Check if the cpusubtype is combined or singular
+        for subtype, subtype_name in CPU_SUB_TYPE_MAP.items():
+            if cpusubtype_value & subtype:
+                decoded_subtypes.append(subtype_name)
+        return (
+            ", ".join(decoded_subtypes) if decoded_subtypes else str(cpusubtype_value)
         )
 
-    # Parse each load command
-    for _ in range(ncmds):
-        cmd_data = f.read(struct.calcsize(byte_order + LOAD_COMMAND_FORMAT))
-        cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, cmd_data)
-        load_commands.append({"cmd": LOAD_COMMAND_TYPES[cmd], "cmdsize": cmdsize})
-        # Move the file pointer past this load command to the start of the next one
-        f.seek(f.tell() + cmdsize - struct.calcsize(byte_order + LOAD_COMMAND_FORMAT))
+    def decode_flags(self, flags_value):
+        decoded_flags = []
+        for flag, flag_name in FLAGS_MAP.items():
+            if flags_value & flag:
+                decoded_flags.append(flag_name)
+        return ", ".join(decoded_flags) if decoded_flags else str(flags_value)
 
-    loadcommans_set = set(load_command["cmd"] for load_command in load_commands)
-    if "LC_SEGMENT_64" in loadcommans_set:
-        loadcommans_set.remove("LC_SEGMENT_64")
-    if "LC_SEGMENT" in loadcommans_set:
-        loadcommans_set.remove("LC_SEGMENT")
+    def get_general_info(self):
+        """Get general information about a Mach-O file.
 
-    return load_commands, loadcommans_set
+        Returns:
+            info_dict: A dictionary containing general information about the Mach-O file,
+                more specifically: filename (str), filesize (int), filetype (str),
+                file_flags (str), md5 (str), sha1 (str), sha256(str).
+        """
+        if self.file_path is None:
+            filename = "-"
+        else:
+            filename = os.path.basename(self.file_path)
+        md5_hash = md5()
+        sha256_hash = sha256()
+        sha1_hash = sha1()
+        md5_hash.update(self.data)
+        sha1_hash.update(self.data)
+        sha256_hash.update(self.data)
+        filetype, file_flags = magic.from_buffer(self.data).split(", flags:")
+        info_dict = {
+            "Filename": filename,
+            "Filesize": len(self.data),
+            "Filetype": filetype,
+            "Flags": file_flags,
+            "MD5": md5_hash.hexdigest(),
+            "SHA1": sha1_hash.hexdigest(),
+            "SHA256": sha256_hash.hexdigest(),
+        }
+        return info_dict
 
+    def get_macho_header(self):
+        """Get the Mach-O header.
 
-def get_file_segments(f):
-    f.seek(0)
-    segments = []
+        Returns:
+            header_dict: A dictionary containing the Mach-O header, more specifically:
+                magic (str), cputype (str), cpusubtype (str), filetype (str), ncmds (int),
+                sizeofcmds (int), flags (str).
+        """
 
-    magic = struct.unpack("I", f.read(4))[0]
-    is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-    byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+        self.f.seek(0)
+        # Read the magic value to determine byte order
+        magic = struct.unpack("I", self.f.read(4))[0]
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
 
-    # Adjust the position to skip cputype and cpusubtype
-    f.seek(12, 1)
+        # Position back to start of file for full header read
+        self.f.seek(0)
+        if magic in {MH_MAGIC, MH_CIGAM}:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
+            header_data = self.f.read(header_size)
+            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_32, header_data)
+        else:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
+            header_data = self.f.read(header_size)
+            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
 
-    # Get number of load commands from header
-    ncmds = struct.unpack("I", f.read(4))[0]
+        header_dict = {
+            "magic": MAGIC_MAP.get(header[0], header[0]),
+            "cputype": CPU_TYPE_MAP.get(header[1], header[1]),
+            "cpusubtype": self.decode_cpusubtype(header[1], header[2]),
+            "filetype": MACHO_FILETYPE[header[3]],
+            "ncmds": header[4],
+            "sizeofcmds": header[5],
+            "flags": self.decode_flags(header[6]),
+        }
 
-    # Skip over the rest of the Mach-O header to reach load commands
-    if is_64_bit:
-        f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
-    else:
-        f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
+        return header_dict
 
-    # Process each load command
-    for _ in range(ncmds):
-        # Read command type and size
-        cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, f.read(8))
+    def get_macho_load_cmd_table(self):
+        """Get the Mach-O load command table.
 
-        # If it's an LC_SEGMENT, process it
-        if (
-            cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"]
-            or cmd == LOAD_COMMAND_TYPES["LC_SEGMENT_64"]
-        ):
-            if is_64_bit:
-                segment_size = struct.calcsize(byte_order + SEGMENT_COMMAND_FORMAT_64)
-                seg_data = f.read(segment_size)
-                (
-                    segname,
-                    vaddr,
-                    vsize,
-                    offset,
-                    size,
-                    max_vm_protection,
-                    initial_vm_protection,
-                    nsectors,
-                    flags,
-                ) = struct.unpack(SEGMENT_COMMAND_FORMAT_64, seg_data)
+        Returns:
+            load_commands: A list of dictionaries containing the Mach-O load commands.
+                Each dictionary contains the following keys: cmd (str), cmdsize (int).
+            load_commands_set: A set of the Mach-O load commands, each itemn as (str).
+        """
+        load_commands = []
+        self.f.seek(0)
+        # Read the magic value to determine byte order and architecture
+        magic = struct.unpack("I", self.f.read(4))[0]
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+
+        # Depending on architecture, read the correct Mach-O header
+        self.f.seek(0)
+        if magic in {MH_MAGIC, MH_CIGAM}:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
+        else:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
+
+        header_data = self.f.read(header_size)
+        if magic in {MH_MAGIC, MH_CIGAM}:
+            _, _, _, filetype, ncmds, sizeofcmds, _ = struct.unpack(
+                byte_order + MACHO_HEADER_FORMAT_32, header_data
+            )
+        else:
+            _, _, _, filetype, ncmds, sizeofcmds, _, _ = struct.unpack(
+                byte_order + MACHO_HEADER_FORMAT_64, header_data
+            )
+
+        # Parse each load command
+        for _ in range(ncmds):
+            cmd_data = self.f.read(struct.calcsize(byte_order + LOAD_COMMAND_FORMAT))
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, cmd_data)
+            load_commands.append({"cmd": LOAD_COMMAND_TYPES[cmd], "cmdsize": cmdsize})
+            # Move the file pointer past this load command to the start of the next one
+            self.f.seek(
+                self.f.tell()
+                + cmdsize
+                - struct.calcsize(byte_order + LOAD_COMMAND_FORMAT)
+            )
+
+        loadcommans_set = set(load_command["cmd"] for load_command in load_commands)
+        if "LC_SEGMENT_64" in loadcommans_set:
+            loadcommans_set.remove("LC_SEGMENT_64")
+        if "LC_SEGMENT" in loadcommans_set:
+            loadcommans_set.remove("LC_SEGMENT")
+
+        return load_commands, loadcommans_set
+
+    def get_file_segments(self):
+        """Get the Mach-O segments.
+
+        Returns:
+            segments: A list of dictionaries, each containing the Mach-O segments.
+                More specifically: segname (str), vaddr (int), vsize (int), offset (int),
+                size (int), max_vm_protection (int), initial_vm_protection (int),
+                nsects (int), flags (int).
+        """
+        self.f.seek(0)
+        segments = []
+
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+
+        # Adjust the position to skip cputype and cpusubtype
+        self.f.seek(12, 1)
+
+        # Get number of load commands from header
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+
+        # Skip over the rest of the Mach-O header to reach load commands
+        if is_64_bit:
+            self.f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
+        else:
+            self.f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
+
+        # Process each load command
+        for _ in range(ncmds):
+            # Read command type and size
+            cmd, cmdsize = struct.unpack(
+                byte_order + LOAD_COMMAND_FORMAT, self.f.read(8)
+            )
+
+            # If it's an LC_SEGMENT, process it
+            if (
+                cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"]
+                or cmd == LOAD_COMMAND_TYPES["LC_SEGMENT_64"]
+            ):
+                if is_64_bit:
+                    segment_size = struct.calcsize(
+                        byte_order + SEGMENT_COMMAND_FORMAT_64
+                    )
+                    seg_data = self.f.read(segment_size)
+                    (
+                        segname,
+                        vaddr,
+                        vsize,
+                        offset,
+                        size,
+                        max_vm_protection,
+                        initial_vm_protection,
+                        nsectors,
+                        flags,
+                    ) = struct.unpack(SEGMENT_COMMAND_FORMAT_64, seg_data)
+                else:
+                    segment_size = struct.calcsize(
+                        byte_order + SEGMENT_COMMAND_FORMAT_32
+                    )
+                    seg_data = self.f.read(segment_size)
+                    (
+                        segname,
+                        vaddr,
+                        vsize,
+                        offset,
+                        size,
+                        max_vm_protection,
+                        initial_vm_protection,
+                        nsectors,
+                        flags,
+                    ) = struct.unpack(SEGMENT_COMMAND_FORMAT_32, seg_data)
+                segname = segname.decode("utf-8").rstrip("\0")
+                tmp_dict = {
+                    "segname": segname,
+                    "vaddr": vaddr,
+                    "vsize": vsize,
+                    "offset": offset,
+                    "size": size,
+                    "max_vm_protection": max_vm_protection,
+                    "initial_vm_protection": initial_vm_protection,
+                    "nsects": nsectors,
+                    "flags": flags,
+                }
+                segments.append((tmp_dict))
+                # Move to the next command
+                self.f.seek(cmdsize - segment_size - 8, 1)
             else:
-                segment_size = struct.calcsize(byte_order + SEGMENT_COMMAND_FORMAT_32)
-                seg_data = f.read(segment_size)
+                # Move to the next command
+                self.f.seek(cmdsize - 8, 1)
+        return segments
+
+    def get_dylib_commands(self):
+        """Get the Mach-O dylib commands.
+
+        Returns:
+            dylib_full_info: A list of dictionaries, each containing the Mach-O dylib commands.
+                Each dictionary contains the following key/value pairs: dylib_name_offset (int),
+                dylib_timestamp (int),
+                dylib_current_version (int), dylib_compat_version (int), dylib_name (str).
+            dylib_names: A list of the Mach-O dylib names. Each entry is represented in
+                its raw form as binary string (bytes).
+        """
+        self.f.seek(0)
+        dylib_full_info = []
+        dylib_names = []
+
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+
+        # Adjust the position to skip cputype and cpusubtype
+        self.f.seek(12, 1)
+
+        # Get number of load commands from header
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+
+        # Skip over the rest of the Mach-O header to reach load commands
+        if is_64_bit:
+            self.f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
+        else:
+            self.f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
+
+        # Process each load command
+        for _ in range(ncmds):
+            # Read command type and size
+            cmd, cmdsize = struct.unpack(
+                byte_order + LOAD_COMMAND_FORMAT, self.f.read(8)
+            )
+
+            # If it's an LC_SEGMENT, process it
+            if cmd in DYLIB_CMD_TYPES:
+                dylib_size = struct.calcsize(byte_order + DYLIB_COMMAND_FORMAT)
+                dylib_data = self.f.read(dylib_size)
                 (
-                    segname,
-                    vaddr,
-                    vsize,
-                    offset,
-                    size,
-                    max_vm_protection,
-                    initial_vm_protection,
-                    nsectors,
-                    flags,
-                ) = struct.unpack(SEGMENT_COMMAND_FORMAT_32, seg_data)
-            segname = segname.decode("utf-8").rstrip("\0")
-            tmp_dict = {
-                "segname": segname,
-                "vaddr": vaddr,
-                "vsize": vsize,
-                "offset": offset,
-                "size": size,
-                "max_vm_protection": max_vm_protection,
-                "initial_vm_protection": initial_vm_protection,
-                "nsects": nsectors,
-                "flags": flags,
-            }
-            segments.append((tmp_dict))
-            # Move to the next command
-            f.seek(cmdsize - segment_size - 8, 1)
-        else:
-            # Move to the next command
-            f.seek(cmdsize - 8, 1)
-    return segments
+                    dylib_name_offset,
+                    dylib_timestamp,
+                    dylib_current_version,
+                    dylib_compat_version,
+                ) = struct.unpack(DYLIB_COMMAND_FORMAT, dylib_data)
 
-
-def get_dylib_commands(f):
-    f.seek(0)
-    dylib_full_info = []
-    dylib_names = []
-
-    magic = struct.unpack("I", f.read(4))[0]
-    is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-    byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
-
-    # Adjust the position to skip cputype and cpusubtype
-    f.seek(12, 1)
-
-    # Get number of load commands from header
-    ncmds = struct.unpack("I", f.read(4))[0]
-
-    # Skip over the rest of the Mach-O header to reach load commands
-    if is_64_bit:
-        f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
-    else:
-        f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
-
-    # Process each load command
-    for _ in range(ncmds):
-        # Read command type and size
-        cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, f.read(8))
-
-        # If it's an LC_SEGMENT, process it
-        if cmd in DYLIB_CMD_TYPES:
-            dylib_size = struct.calcsize(byte_order + DYLIB_COMMAND_FORMAT)
-            dylib_data = f.read(dylib_size)
-            (
-                dylib_name_offset,
-                dylib_timestamp,
-                dylib_current_version,
-                dylib_compat_version,
-            ) = struct.unpack(DYLIB_COMMAND_FORMAT, dylib_data)
-
-            dylib_name_size = cmdsize - dylib_name_offset
-            dylib_name = f.read(dylib_name_size).rstrip(b"\x00")
-            tmp_dict = {
-                "dylib_name_offset": dylib_name_offset,
-                "dylib_timestamp": dylib_timestamp,
-                "dylib_current_version": dylib_current_version,
-                "dylib_compat_version": dylib_compat_version,
-                "dylib_name": dylib_name,
-            }
-            dylib_full_info.append((tmp_dict))
-            dylib_names.append(dylib_name)
-        else:
-            # Move to the next command
-            f.seek(cmdsize - 8, 1)
-    return dylib_full_info, dylib_names
-
-
-def main():
-    # # Set up argparse... placeholder more options to come
-    parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
-    parser.add_argument(
-        "-f", "--file", type=str, help="Path to the file to be parsed", required=True
-    )
-
-    args = parser.parse_args()
-    file_path = args.file
-
-    with open(file_path, "rb") as f:
-        magic = struct.unpack("I", f.read(4))[0]
-        if magic in MAGIC_MAP:
-            f.seek(0)
-            data = f.read()
-            print("\nGetting general info...")
-            print_dict(get_general_info(data))
-
-            print("\nParsing Mac-O Header...")
-            print_dict(get_macho_header(f))
-
-            print("\nParsing Load Cmd table...")
-            loadcommands, loadcommands_set = get_macho_load_cmd_table(f)
-            print_list(loadcommands)
-
-            print("\nLoad Commands:")
-            print_list(sorted(loadcommands_set))
-
-            print("\nFile Segments:")
-            segments = get_file_segments(f)
-            for seg in segments:
-                print_dict(seg)
-                print("")
-
-            print("\nParsing Dylib Cmd table...")
-            dylib_full_info, dylib_names = get_dylib_commands(f)
-            for dylib in dylib_full_info:
-                print_dict(dylib)
-                print("")
-
-            print("\nParsing Dylib List...")
-            print_list(dylib_names)
-        else:
-            raise ValueError("Not a valid Mach-O file")
-
-
-if __name__ == "__main__":
-    main()
+                dylib_name_size = cmdsize - dylib_name_offset
+                dylib_name = self.f.read(dylib_name_size).rstrip(b"\x00")
+                tmp_dict = {
+                    "dylib_name_offset": dylib_name_offset,
+                    "dylib_timestamp": dylib_timestamp,
+                    "dylib_current_version": dylib_current_version,
+                    "dylib_compat_version": dylib_compat_version,
+                    "dylib_name": dylib_name,
+                }
+                dylib_full_info.append((tmp_dict))
+                dylib_names.append(dylib_name)
+            else:
+                # Move to the next command
+                self.f.seek(cmdsize - 8, 1)
+        return dylib_full_info, dylib_names
