@@ -668,6 +668,42 @@ def get_dylib_commands(f):
     return dylib_full_info, dylib_names
 
 
+def get_dylib_hash(dylib_names):
+    """Get the dylib hash of the Mach-O file.
+
+    Returns:
+        dylib_hash: the dylib hash of the Mach-O file.
+    """
+    sorted_lowered_dylibs = []
+
+    for dylib in dylib_names:
+        sorted_lowered_dylibs.append(dylib.decode().lower())
+    sorted_lowered_dylibs = sorted(sorted_lowered_dylibs)
+    dylib_hash = md5(",".join(sorted_lowered_dylibs).encode()).hexdigest()
+
+    return dylib_hash
+
+
+def get_similarity_hashes(f, dylib_names):
+    """Get the similarity hashes of the Mach-O file.
+
+    This method is used to get different available similarity hashes of
+    the Mach-O file. This is inspired by the "macho-similarity" tool
+    from Greg Lesnewich (@greglesnewich)
+
+    Returns:
+        similarity_hashes: A dictionary containing the similarity hashes
+            of the Mach-O file. Currently implemented are: dylib_hash.
+    """
+    similarity_hashes = {}
+
+    similarity_hashes["dylib_hash"] = get_dylib_hash(dylib_names)
+    # similarity_hashes["import_hash"] = self.get_import_hash()
+    # similarity_hashes["export_hash"] = self.get_export_hash()
+
+    return similarity_hashes
+
+
 def main():
     # Set up argparse... placeholder more options to come
     parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
@@ -698,8 +734,13 @@ def main():
         action="store_true",
         help="Print Dylib Command Table and Dylib list",
     )
+    parser.add_argument(
+        "-sm", "--similarity", action="store_true", help="Print similarity hashes"
+    )
+
     args = parser.parse_args()
     file_path = args.file
+    dylib_names = None
 
     # Extract the filename
     filename = os.path.basename(file_path)
@@ -739,6 +780,13 @@ def main():
             print_list_dict_as_table(dylib_full_info)
             print("\n[Dylib Names]")
             print_list(dylib_names)
+
+        if args.all or args.similarity:
+            if dylib_names is None:
+                dylib_full_info, dylib_names = get_dylib_commands(f)
+            print("\n[Similarity Hashes]")
+            similarity_hashes = get_similarity_hashes(f, dylib_names)
+            print_dict(similarity_hashes)
     else:
         f.close()
         raise ValueError("Not a valid Mach-O file")
