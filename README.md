@@ -163,4 +163,4 @@ Example output:
 - https://lief-project.github.io/doc/latest/tutorials/11_macho_modification.html
 - https://github.com/VirusTotal/yara/blob/master/libyara/include/yara/macho.h
 - https://github.com/corkami/pics/blob/master/binary/README.md
-
+- https://github.com/qyang-nj/llios/tree/main
