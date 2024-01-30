@@ -338,7 +338,7 @@ DYLIB_CMD_TYPES = two_way_dict(dylib_command_types)
 class MachO:
     """A Mach-O representation.
 
-    This class represents a Mach-O filif self.file_path is None:e, providing methods to parse it and
+    This class represents a Mach-O file, providing methods to parse it and
     access most of its structures and data.
 
     It expect to be supplied with either a file path or a data buffer to parse.
