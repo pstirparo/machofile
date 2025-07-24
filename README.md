@@ -95,20 +95,20 @@ Example output:
 [General File Info]
         Filename:    b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
         Filesize:    54240
-        Filetype:    Mach-O i386 executable
-        Flags:       <NOUNDEFS|DYLDLINK|TWOLEVEL>
+        Filetype:    EXECUTE
+        Flags:       NOUNDEFS, DYLDLINK, TWOLEVEL
         MD5:         20ffe440e4f557b9e03855b5da2b3c9c
         SHA1:        1bf61ecad8568a774f9fba726a254a9603d09f33
         SHA256:      b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
 
-[Mac-O Header]
-        magic:       MH_MAGIC (32-bit)
+[Mach-O Header]
+        magic:       MH_MAGIC (32-bit), 0xFEEDFACE
         cputype:     Intel i386
         cpusubtype:  x86_ALL, x86_64_H, x86_64_LIB64
-        filetype:    MH_EXECUTE
+        filetype:    EXECUTE
         ncmds:       13
         sizeofcmds:  1180
-        flags:       MH_NOUNDEFS, MH_DYLDLINK, MH_TWOLEVEL
+        flags:       NOUNDEFS, DYLDLINK, TWOLEVEL
 
 [Load Cmd table]
         {'cmd': 'LC_SEGMENT', 'cmdsize': 56}
@@ -152,6 +152,9 @@ Example output:
 [Dylib Names]
         b'/usr/lib/libgcc_s.1.dylib'
         b'/usr/lib/libSystem.B.dylib'
+
+[Similarity Hashes]
+        dylib_hash:  0556bed5dc31bddaee73f3234b3c577b
 ```
 
 ## Reference/Documentation links:
