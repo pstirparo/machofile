@@ -20,7 +20,7 @@ Reference/Documentation links:
 - https://lief-project.github.io/doc/latest/tutorials/11_macho_modification.html
 - https://github.com/VirusTotal/yara/blob/master/libyara/include/yara/macho.h
 
-Copyright (c) 2023 Pasquale Stirparo <pstirparo@threatresearch.ch>
+Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 """
 
 # struct mach_header {
@@ -748,3 +748,107 @@ class MachO:
         # similarity_hashes["export_hash"] = self.get_export_hash()
 
         return similarity_hashes
+
+# --- CLI Helper Functions ---
+import argparse
+
+def print_dict(d):
+    for k, v in d.items():
+        print(f"\t{k + ':':<13}{v}")
+
+def print_list(l):
+    for i in l:
+        print(f"\t{i}")
+
+def print_list_dict(l):
+    for d in l:
+        for k, v in d.items():
+            print(f"\t{k + ':':<13}{v}")
+
+def print_list_dict_as_table(dict_list):
+    if not dict_list:
+        print("Empty list provided.")
+        return
+    headers = list(dict_list[0].keys())
+    widths = {
+        key: max(max(len(str(d.get(key, ""))) for d in dict_list), len(key))
+        for key in headers
+    }
+    header_row = " ".join(key.upper().ljust(widths[key]) for key in headers)
+    print(f"\t{header_row}")
+    print("\t" + ("-" * len(header_row)))
+    for item in dict_list:
+        row = " ".join(str(item.get(key, "")).ljust(widths[key]) for key in headers)
+        print(f"\t{row}")
+
+# --- CLI Main Entrypoint ---
+def main():
+    parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
+    parser.add_argument(
+        "-f", "--file", type=str, help="Path to the file to be parsed", required=True
+    )
+    parser.add_argument(
+        "-a", "--all", action="store_true", help="Print all info about the file"
+    )
+    parser.add_argument(
+        "-i", "--info", action="store_true", help="Print general info about the file"
+    )
+    parser.add_argument(
+        "-hd", "--header", action="store_true", help="Print Mach-O header info"
+    )
+    parser.add_argument(
+        "-l",
+        "--load_cmd_t",
+        action="store_true",
+        help="Print Load Command Table and Command list",
+    )
+    parser.add_argument(
+        "-sg", "--segments", action="store_true", help="Print File Segments info"
+    )
+    parser.add_argument(
+        "-d",
+        "--dylib",
+        action="store_true",
+        help="Print Dylib Command Table and Dylib list",
+    )
+    parser.add_argument(
+        "-sm", "--similarity", action="store_true", help="Print similarity hashes"
+    )
+
+    args = parser.parse_args()
+    file_path = args.file
+    filename = os.path.basename(file_path)
+
+    macho = MachO(file_path=file_path)
+    macho.parse()
+
+    if args.all or args.info:
+        print("\n[General File Info]")
+        print_dict(macho.general_info)
+
+    if args.all or args.header:
+        print("\n[Mach-O Header]")
+        print_dict(macho.header)
+
+    if args.all or args.load_cmd_t:
+        print("\n[Load Cmd table]")
+        print_list(macho.load_commands)
+        print("\n[Load Commands]")
+        print_list(sorted(macho.load_commands_set))
+
+    if args.all or args.segments:
+        print("\n[File Segments]")
+        print_list_dict_as_table(macho.segments)
+
+    if args.all or args.dylib:
+        print("\n[Dylib Commands]")
+        print_list_dict_as_table(macho.dylib_commands)
+        print("\n[Dylib Names]")
+        print_list(macho.dylib_names)
+
+    if args.all or args.similarity:
+        print("\n[Similarity Hashes]")
+        print_dict(macho.get_similarity_hashes())
+
+if __name__ == "__main__":
+    main()

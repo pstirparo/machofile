@@ -70,10 +70,11 @@ dylib_cmd_list, dylib_lst = macho.get_dylib_commands()
 ```
 
 ### Command Line version
-From CLI, at the moment it just retrieves all the structures parsed, in the future there will be flags to just get one specific structure or a list of them.
+You can now use `machofile.py` directly as a CLI tool. All CLI features are available from the same file you import as a module.
+
 ```
-% python3 machofile-cli.py -h
-usage: machofile-cli.py [-h] -f FILE [-a] [-i] [-hd] [-l] [-sg] [-d]
+% python3 machofile.py -h
+usage: machofile.py [-h] -f FILE [-a] [-i] [-hd] [-l] [-sg] [-d] [-sm]
 
 Parse Mach-O file structures.
 
@@ -86,11 +87,12 @@ options:
   -l, --load_cmd_t      Print Load Command Table and Command list
   -sg, --segments       Print File Segments info
   -d, --dylib           Print Dylib Command Table and Dylib list
+  -sm, --similarity     Print similarity hashes
 ```
 
 Example output:
 ```
-% python3 machofile-cli.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b 
+% python3 machofile.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b 
 
 [General File Info]
         Filename:    b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
