@@ -67,7 +67,7 @@ Copyright (c) 2023 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # };
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2023.11.04 alpha"
+__version__ = "2025.07.24 alpha"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
