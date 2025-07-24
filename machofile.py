@@ -491,8 +491,11 @@ class MachO:
         filetype = MACHO_FILETYPE[header[3]]
         if filetype.startswith('MH_'):
             filetype = filetype[3:]
+        magic_val = header[0]
+        magic_str = MAGIC_MAP.get(magic_val, magic_val)
+        magic_field = f"{magic_str}, 0x{magic_val:08X}" if isinstance(magic_str, str) else f"0x{magic_val:08X}"
         header_dict = {
-            "magic": MAGIC_MAP.get(header[0], header[0]),
+            "magic": magic_field,
             "cputype": CPU_TYPE_MAP.get(header[1], header[1]),
             "cpusubtype": self.decode_cpusubtype(header[1], header[2]),
             "filetype": filetype,
