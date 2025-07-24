@@ -416,6 +416,7 @@ class MachO:
         self.dylib_commands = []
         self.dylib_names = []
         self.imported_functions = {}
+        self.exported_symbols = {}
 
     def parse(self):
         """Parse a Mach-O file.
@@ -429,6 +430,7 @@ class MachO:
         self.segments = self.get_file_segments()
         self.dylib_commands, self.dylib_names = self.get_dylib_commands()
         self.imported_functions = self.get_imported_functions()
+        self.exported_symbols = self.get_exported_symbols()
 
     def decode_cpusubtype(self, cputype, cpusubtype_value):
         mask = 0xFFFFFFFF  # to get unsigned value
@@ -854,6 +856,116 @@ class MachO:
             del imported_functions_by_dylib["<unknown>"]
         return imported_functions_by_dylib
     
+    def get_exported_symbols(self):
+        """Extract exported (defined external) symbols from the Mach-O file.
+
+        Returns:
+            exported_symbols: dict mapping dylib ordinal or '<unknown>' to list of exported symbols.
+        """
+        exported_symbols_by_dylib = {}
+        # Build a list of dylib names in the order they appear (1-based ordinal)
+        dylib_ordinals = []
+        for d in self.dylib_names:
+            if isinstance(d, bytes):
+                dylib_ordinals.append(d.decode(errors="replace"))
+            else:
+                dylib_ordinals.append(str(d))
+        exported_symbols_by_dylib["<unknown>"] = []
+
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+
+        # Adjust the position to skip cputype and cpusubtype
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        symtab = None
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            rest_of_cmd = self.f.read(cmdsize - 8)
+            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+            self.f.seek(cmd_start + cmdsize)
+
+        if not symtab:
+            return exported_symbols_by_dylib  # Could not find symbol table
+
+        symoff = symtab[2]
+        nsyms = symtab[3]
+        stroff = symtab[4]
+        strsize = symtab[5]
+
+        self.f.seek(stroff)
+        string_table = self.f.read(strsize)
+        self.f.seek(symoff)
+        if is_64_bit:
+            nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+        else:
+            nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+
+        # Process all symbols in the symbol table
+        for idx in range(nsyms):
+            self.f.seek(symoff + idx * nlist_size)
+            entry = self.f.read(nlist_size)
+            if len(entry) != nlist_size:
+                continue
+            if is_64_bit:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            else:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            if n_strx == 0:
+                continue
+            N_TYPE = 0x0e
+            N_EXT = 0x01
+            N_SECT = 0x0e
+            N_ABS = 0x02
+            str_offset = n_strx
+            if str_offset < len(string_table):
+                name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                if not name:
+                    continue
+                symbol_name = name.decode(errors="replace")
+                # Only process defined external symbols (N_SECT and N_EXT)
+                if (n_type & N_TYPE) == N_SECT and (n_type & N_EXT):
+                    # Check if this is __mh_execute_header and calculate its file offset
+                    if symbol_name == "__mh_execute_header":
+                        # Calculate file offset from virtual address using segment mapping
+                        file_offset = None
+                        for segment in self.segments:
+                            if (n_value >= segment["vaddr"] and 
+                                n_value < segment["vaddr"] + segment["vsize"]):
+                                # Calculate offset within the segment
+                                offset_in_segment = n_value - segment["vaddr"]
+                                file_offset = segment["offset"] + offset_in_segment
+                                break
+                        
+                        # Exclude if file offset is 0 (default export)
+                        if file_offset == 0:
+                            continue
+                    # Extract library ordinal from n_desc (high 8 bits)
+                    lib_ordinal = (n_desc >> 8) & 0xFF
+                    if lib_ordinal == 0 or lib_ordinal > len(dylib_ordinals):
+                        exported_symbols_by_dylib["<unknown>"].append(symbol_name)
+                    else:
+                        dylib_name = dylib_ordinals[lib_ordinal - 1]
+                        if dylib_name not in exported_symbols_by_dylib:
+                            exported_symbols_by_dylib[dylib_name] = []
+                        exported_symbols_by_dylib[dylib_name].append(symbol_name)
+        # Remove <unknown> if empty
+        if not exported_symbols_by_dylib["<unknown>"]:
+            del exported_symbols_by_dylib["<unknown>"]
+        return exported_symbols_by_dylib
+
     def get_import_hash(self):
         """Get the import hash of the Mach-O file.
 
@@ -886,6 +998,24 @@ class MachO:
 
         return dylib_hash
 
+    def get_export_hash(self):
+        """Get the export hash of the Mach-O file.
+
+        Returns:
+            export_hash: the export hash of the Mach-O file.
+        """
+        sorted_lowered_exports = []
+        if not self.exported_symbols:
+            return None
+        for dylib, exports in self.exported_symbols.items():
+            for exp in exports:
+                sorted_lowered_exports.append(exp.lower())
+        sorted_lowered_exports = sorted(sorted_lowered_exports)
+        sorted_lowered_exports = list(dict.fromkeys(sorted_lowered_exports))
+        export_hash = md5(",".join(sorted_lowered_exports).encode()).hexdigest()
+
+        return export_hash
+    
     def get_similarity_hashes(self):
         """Get the similarity hashes of the Mach-O file.
 
@@ -901,7 +1031,7 @@ class MachO:
 
         similarity_hashes["dylib_hash"] = self.get_dylib_hash()
         similarity_hashes["import_hash"] = self.get_import_hash()
-        # similarity_hashes["export_hash"] = self.get_export_hash()
+        similarity_hashes["export_hash"] = self.get_export_hash()
 
         return similarity_hashes
 
@@ -915,7 +1045,8 @@ def print_dict(d):
             for item in v:
                 print(f"\t\t{item}")
         else:
-            print(f"\t{k + ':':<13}{v}")
+            if v is not None:
+                print(f"\t{k + ':':<13}{v}")
 
 def print_list(l):
     for i in l:
@@ -976,6 +1107,9 @@ def main():
         "-i", "--imports", action="store_true", help="Print imported symbols"
     )
     parser.add_argument(
+        "-e", "--exports", action="store_true", help="Print exported symbols"
+    )
+    parser.add_argument(
         "-sm", "--similarity", action="store_true", help="Print similarity hashes"
     )
 
@@ -1012,7 +1146,17 @@ def main():
 
     if args.all or args.imports:
         print("\n[Imported Functions]")
-        print_dict(macho.imported_functions)
+        if macho.imported_functions:
+            print_dict(macho.imported_functions)
+        else:
+            print("\tNo imported functions found")
+
+    if args.all or args.exports:
+        print("\n[Exported Functions]")
+        if macho.exported_symbols:
+            print_dict(macho.exported_symbols)
+        else:
+            print("\tNo exported symbols found")
 
     if args.all or args.similarity:
         print("\n[Similarity Hashes]")
