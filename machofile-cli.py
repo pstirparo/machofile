@@ -318,6 +318,7 @@ load_command_types = [
     ("LC_DATA_IN_CODE", 0x29),
     ("LC_SOURCE_VERSION", 0x2A),
     ("LC_DYLIB_CODE_SIGN_DRS", 0x2B),
+    ("LC_ENCRYPTION_INFO_64", 0x2C),
     ("LC_LINKER_OPTIONS", 0x2D),
     ("LC_LINKER_OPTIMIZATION_HINT", 0x2E),
     ("LC_VERSION_MIN_TVOS", 0x2F),
