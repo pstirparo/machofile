@@ -415,7 +415,7 @@ class MachO:
         self.segments = []
         self.dylib_commands = []
         self.dylib_names = []
-        self.imported_functions = []
+        self.imported_functions = {}
 
     def parse(self):
         """Parse a Mach-O file.
@@ -755,9 +755,20 @@ class MachO:
         """Extract imported functions from the Mach-O file.
 
         Returns:
-            imported_functions: A list of the imported functions.
+            imported_functions: dict mapping dylib name to list of imported symbols.
         """
-        imported_functions = []
+        imported_functions_by_dylib = {}
+        # Build a list of dylib names in the order they appear
+        dylib_ordinals = []
+        for d in self.dylib_names:
+            # decode if bytes
+            if isinstance(d, bytes):
+                dylib_ordinals.append(d.decode(errors="replace"))
+            else:
+                dylib_ordinals.append(str(d))
+        # Add a fallback for symbols with ordinal 0
+        imported_functions_by_dylib["<unknown>"] = []
+
         self.f.seek(0)
         magic = struct.unpack("I", self.f.read(4))[0]
         is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
@@ -786,7 +797,7 @@ class MachO:
             self.f.seek(cmd_start + cmdsize)
 
         if not symtab or not dysymtab:
-            return imported_functions  # Could not find symbol tables
+            return imported_functions_by_dylib  # Could not find symbol tables
 
         # Unpack symtab
         symoff = symtab[2]
@@ -826,10 +837,22 @@ class MachO:
             str_offset = n_strx
             if str_offset < len(string_table):
                 name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
-                if name:
-                    imported_functions.append(name.decode(errors="replace"))
-
-        return imported_functions
+                if not name:
+                    continue
+                symbol_name = name.decode(errors="replace")
+                # Extract library ordinal from n_desc (high 8 bits)
+                lib_ordinal = (n_desc >> 8) & 0xFF
+                if lib_ordinal == 0 or lib_ordinal > len(dylib_ordinals):
+                    imported_functions_by_dylib["<unknown>"].append(symbol_name)
+                else:
+                    dylib_name = dylib_ordinals[lib_ordinal - 1]
+                    if dylib_name not in imported_functions_by_dylib:
+                        imported_functions_by_dylib[dylib_name] = []
+                    imported_functions_by_dylib[dylib_name].append(symbol_name)
+        # Remove <unknown> if empty
+        if not imported_functions_by_dylib["<unknown>"]:
+            del imported_functions_by_dylib["<unknown>"]
+        return imported_functions_by_dylib
     
     def get_import_hash(self):
         """Get the import hash of the Mach-O file.
@@ -839,8 +862,9 @@ class MachO:
         """
         sorted_lowered_imports = []
         
-        for imp in self.imported_functions:
-            sorted_lowered_imports.append(imp.lower())
+        for dylib, imports in self.imported_functions.items():
+            for imp in imports:
+                sorted_lowered_imports.append(imp.lower())
         sorted_lowered_imports = sorted(sorted_lowered_imports)
         sorted_lowered_imports = list(dict.fromkeys(sorted_lowered_imports))
         import_hash = md5(",".join(sorted_lowered_imports).encode()).hexdigest()
@@ -886,7 +910,12 @@ import argparse
 
 def print_dict(d):
     for k, v in d.items():
-        print(f"\t{k + ':':<13}{v}")
+        if isinstance(v, list):
+            print(f"\t{k + ':':<13}")
+            for item in v:
+                print(f"\t\t{item}")
+        else:
+            print(f"\t{k + ':':<13}{v}")
 
 def print_list(l):
     for i in l:
@@ -923,7 +952,7 @@ def main():
         "-a", "--all", action="store_true", help="Print all info about the file"
     )
     parser.add_argument(
-        "-i", "--info", action="store_true", help="Print general info about the file"
+        "-g", "--general_info", action="store_true", help="Print general info about the file"
     )
     parser.add_argument(
         "-hd", "--header", action="store_true", help="Print Mach-O header info"
@@ -944,6 +973,9 @@ def main():
         help="Print Dylib Command Table and Dylib list",
     )
     parser.add_argument(
+        "-i", "--imports", action="store_true", help="Print imported symbols"
+    )
+    parser.add_argument(
         "-sm", "--similarity", action="store_true", help="Print similarity hashes"
     )
 
@@ -954,7 +986,7 @@ def main():
     macho = MachO(file_path=file_path)
     macho.parse()
 
-    if args.all or args.info:
+    if args.all or args.general_info:
         print("\n[General File Info]")
         print_dict(macho.general_info)
 
@@ -977,6 +1009,10 @@ def main():
         print_list_dict_as_table(macho.dylib_commands)
         print("\n[Dylib Names]")
         print_list(macho.dylib_names)
+
+    if args.all or args.imports:
+        print("\n[Imported Functions]")
+        print_dict(macho.imported_functions)
 
     if args.all or args.similarity:
         print("\n[Similarity Hashes]")
