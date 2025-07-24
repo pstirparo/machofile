@@ -66,6 +66,38 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 #     } dylib;
 # };
 
+# struct symtab_command {
+#     uint32_t cmd;        /* LC_SYMTAB */
+#     uint32_t cmdsize;    /* sizeof(struct symtab_command) */
+#     uint32_t symoff;     /* symbol table offset */
+#     uint32_t nsyms;      /* number of symbol table entries */
+#     uint32_t stroff;     /* string table offset */
+#     uint32_t strsize;    /* string table size in bytes */
+# };
+
+# struct dysymtab_command {
+#     uint32_t cmd;           /* LC_DYSYMTAB */
+#     uint32_t cmdsize;         /* sizeof(struct dysymtab_command) */
+#     uint32_t ilocalsym;	    /* index to local symbols */
+#     uint32_t nlocalsym;	    /* number of local symbols */
+#     uint32_t iextdefsym;      /* index to externally defined symbols */
+#     uint32_t nextdefsym;      /* number of externally defined symbols */
+#     uint32_t iundefsym;	    /* index to undefined symbols */
+#     uint32_t nundefsym;	    /* number of undefined symbols */
+#     uint32_t tocoff;	        /* file offset to table of contents */
+#     uint32_t ntoc;            /* number of entries in table of contents */
+#     uint32_t modtaboff;	    /* file offset to module table */
+#     uint32_t nmodtab;	        /* number of module table entries */
+#     uint32_t extrefsymoff;    /* offset to referenced symbol table */
+#     uint32_t nextrefsyms;     /* number of referenced symbol table entries */
+#     uint32_t indirectsymoff;  /* file offset to the indirect symbol table */
+#     uint32_t nindirectsyms;   /* number of indirect symbol table entries */
+#     uint32_t extreloff;	    /* offset to external relocation entries */
+#     uint32_t nextrel;	        /* number of external relocation entries */
+#     uint32_t locreloff;	    /* offset to local relocation entries */
+#     uint32_t nlocrel;	        /* number of local relocation entries */
+# };
+
 __author__ = "Pasquale Stirparo"
 __version__ = "2025.07.24 alpha"
 __contact__ = "pstirparo@threatresearch.ch"
@@ -89,6 +121,8 @@ LOAD_COMMAND_FORMAT = "II"
 SEGMENT_COMMAND_FORMAT_32 = "16sIIIIIIII"
 SEGMENT_COMMAND_FORMAT_64 = "16sQQQQIIII"
 DYLIB_COMMAND_FORMAT = "IIII"
+SYMTAB_COMMAND_FORMAT = "IIIIII"
+DYSYMTAB_COMMAND_FORMAT = "IIIIIIIIIIIIIIIIII"
 
 STRUCT_SIZEOF_TYPES = {
     "x": 1,
@@ -381,6 +415,7 @@ class MachO:
         self.segments = []
         self.dylib_commands = []
         self.dylib_names = []
+        self.imported_functions = []
 
     def parse(self):
         """Parse a Mach-O file.
@@ -393,6 +428,7 @@ class MachO:
         self.load_commands, self.load_commands_set = self.get_macho_load_cmd_table()
         self.segments = self.get_file_segments()
         self.dylib_commands, self.dylib_names = self.get_dylib_commands()
+        self.imported_functions = self.get_imported_functions()
 
     def decode_cpusubtype(self, cputype, cpusubtype_value):
         mask = 0xFFFFFFFF  # to get unsigned value
@@ -715,6 +751,102 @@ class MachO:
                 self.f.seek(cmdsize - 8, 1)
         return dylib_full_info, dylib_names
 
+    def get_imported_functions(self):
+        """Extract imported functions from the Mach-O file.
+
+        Returns:
+            imported_functions: A list of the imported functions.
+        """
+        imported_functions = []
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+
+        # Adjust the position to skip cputype and cpusubtype
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        symtab = None
+        dysymtab = None
+        # Find LC_SYMTAB and LC_DYSYMTAB
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            rest_of_cmd = self.f.read(cmdsize - 8)
+            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+            elif cmd == LOAD_COMMAND_TYPES["LC_DYSYMTAB"]:
+                dysymtab = struct.unpack(byte_order + DYSYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + DYSYMTAB_COMMAND_FORMAT)])
+            self.f.seek(cmd_start + cmdsize)
+
+        if not symtab or not dysymtab:
+            return imported_functions  # Could not find symbol tables
+
+        # Unpack symtab
+        symoff = symtab[2]
+        nsyms = symtab[3]
+        stroff = symtab[4]
+        strsize = symtab[5]
+
+        # Unpack dysymtab
+        iundefsym = dysymtab[6]
+        nundefsym = dysymtab[7]
+
+        # Read string table
+        self.f.seek(stroff)
+        string_table = self.f.read(strsize)
+
+        # Read symbol table
+        self.f.seek(symoff)
+        if is_64_bit:
+            nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+        else:
+            nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+
+        # Only process undefined symbols (imported functions)
+        for idx in range(iundefsym, iundefsym + nundefsym):
+            self.f.seek(symoff + idx * nlist_size)
+            entry = self.f.read(nlist_size)
+            if len(entry) != nlist_size:
+                continue
+            if is_64_bit:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            else:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            if n_strx == 0:
+                continue
+            str_offset = n_strx
+            if str_offset < len(string_table):
+                name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                if name:
+                    imported_functions.append(name.decode(errors="replace"))
+
+        return imported_functions
+    
+    def get_import_hash(self):
+        """Get the import hash of the Mach-O file.
+
+        Returns:
+            import_hash: the import hash of the Mach-O file.
+        """
+        sorted_lowered_imports = []
+        
+        for imp in self.imported_functions:
+            sorted_lowered_imports.append(imp.lower())
+        sorted_lowered_imports = sorted(sorted_lowered_imports)
+        sorted_lowered_imports = list(dict.fromkeys(sorted_lowered_imports))
+        import_hash = md5(",".join(sorted_lowered_imports).encode()).hexdigest()
+
+        return import_hash
+
     def get_dylib_hash(self):
         """Get the dylib hash of the Mach-O file.
 
@@ -744,7 +876,7 @@ class MachO:
         similarity_hashes = {}
 
         similarity_hashes["dylib_hash"] = self.get_dylib_hash()
-        # similarity_hashes["import_hash"] = self.get_import_hash()
+        similarity_hashes["import_hash"] = self.get_import_hash()
         # similarity_hashes["export_hash"] = self.get_export_hash()
 
         return similarity_hashes
