@@ -76,7 +76,6 @@ from hashlib import sha1
 import struct
 import os
 import io
-import magic
 
 
 def two_way_dict(pairs):
@@ -411,7 +410,11 @@ class MachO:
         decoded_flags = []
         for flag, flag_name in FLAGS_MAP.items():
             if flags_value & flag:
-                decoded_flags.append(flag_name)
+                # Remove 'MH_' prefix if present
+                if flag_name.startswith('MH_'):
+                    decoded_flags.append(flag_name[3:])
+                else:
+                    decoded_flags.append(flag_name)
         return ", ".join(decoded_flags) if decoded_flags else str(flags_value)
 
     def get_general_info(self):
@@ -432,7 +435,23 @@ class MachO:
         md5_hash.update(self.data)
         sha1_hash.update(self.data)
         sha256_hash.update(self.data)
-        filetype, file_flags = magic.from_buffer(self.data).split(", flags:")
+        # Parse Mach-O header to get filetype and flags
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+        self.f.seek(0)
+        if magic in {MH_MAGIC, MH_CIGAM}:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
+            header_data = self.f.read(header_size)
+            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_32, header_data)
+        else:
+            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
+            header_data = self.f.read(header_size)
+            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
+        filetype = MACHO_FILETYPE[header[3]]
+        if filetype.startswith('MH_'):
+            filetype = filetype[3:]
+        file_flags = self.decode_flags(header[6])
         info_dict = {
             "Filename": filename,
             "Filesize": len(self.data),
@@ -469,11 +488,14 @@ class MachO:
             header_data = self.f.read(header_size)
             header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
 
+        filetype = MACHO_FILETYPE[header[3]]
+        if filetype.startswith('MH_'):
+            filetype = filetype[3:]
         header_dict = {
             "magic": MAGIC_MAP.get(header[0], header[0]),
             "cputype": CPU_TYPE_MAP.get(header[1], header[1]),
             "cpusubtype": self.decode_cpusubtype(header[1], header[2]),
-            "filetype": MACHO_FILETYPE[header[3]],
+            "filetype": filetype,
             "ncmds": header[4],
             "sizeofcmds": header[5],
             "flags": self.decode_flags(header[6]),
