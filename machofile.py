@@ -976,7 +976,7 @@ class MachO:
         
         for dylib, imports in self.imported_functions.items():
             for imp in imports:
-                sorted_lowered_imports.append(imp.lower())
+                sorted_lowered_imports.append(imp.strip().lower())
         sorted_lowered_imports = sorted(sorted_lowered_imports)
         sorted_lowered_imports = list(dict.fromkeys(sorted_lowered_imports))
         import_hash = md5(",".join(sorted_lowered_imports).encode()).hexdigest()
@@ -1015,6 +1015,116 @@ class MachO:
         export_hash = md5(",".join(sorted_lowered_exports).encode()).hexdigest()
 
         return export_hash
+
+    def get_symhash_dict(self):
+        """Get the symhash for the Mach-O file, following the original Anomali Labs/CRITS logic.
+
+        This method walks the symbol table, and for each symbol:
+            - skips STAB (debug) symbols
+            - includes only external symbols (n_type & N_EXT)
+            - includes only undefined symbols (n_type & N_TYPE == N_UNDEF)
+        The resulting list of symbol names is sorted, joined with commas, and MD5 hashed.
+        Returns:
+            symhash_dict: dict mapping entity description ("cputype filetype magic") to symhash
+        """
+        symhash_dict = {}
+        sym_list = []
+
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+
+        # Adjust the position to skip cputype and cpusubtype
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        symtab = None
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            rest_of_cmd = self.f.read(cmdsize - 8)
+            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+            self.f.seek(cmd_start + cmdsize)
+
+        if not symtab:
+            return symhash_dict
+
+        symoff = symtab[2]
+        nsyms = symtab[3]
+        stroff = symtab[4]
+        strsize = symtab[5]
+
+        self.f.seek(stroff)
+        string_table = self.f.read(strsize)
+        self.f.seek(symoff)
+        if is_64_bit:
+            nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+        else:
+            nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+
+        N_STAB = 0xE0
+        N_TYPE = 0x0e
+        N_EXT  = 0x01
+        N_UNDEF = 0x00
+
+        for idx in range(nsyms):
+            self.f.seek(symoff + idx * nlist_size)
+            entry = self.f.read(nlist_size)
+            if len(entry) != nlist_size:
+                continue
+            if is_64_bit:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            else:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            # Skip STAB/debug symbols
+            if n_type & N_STAB != 0:
+                continue
+            # Only external
+            if not (n_type & N_EXT):
+                continue
+            # Only undefined
+            if (n_type & N_TYPE) != N_UNDEF:
+                continue
+            if n_strx == 0:
+                continue
+            str_offset = n_strx
+            if str_offset < len(string_table):
+                name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                if not name:
+                    continue
+                symbol_name = name.decode(errors="replace")
+                sym_list.append(symbol_name)
+        # Sort and hash
+        sym_list = sorted(set(sym_list))
+        symhash = md5(",".join(sym_list).encode()).hexdigest()
+        # Compose entity string (like original: cputype filetype magic)
+        cputype = self.header.get("cputype", "?")
+        filetype = self.header.get("filetype", "?")
+        magic_str = self.header.get("magic", "?")
+        entity_string = f"{cputype} {filetype} {magic_str}"
+        symhash_dict[entity_string] = symhash
+        return symhash_dict
+
+    def get_symhash(self):
+        """Get the symhash for the current Mach-O entity (first/only arch,
+            not supporting FAT files yet).
+
+        Returns:
+            symhash: the symhash of the Mach-O file.
+        """
+        d = self.get_symhash_dict()
+        if d:
+            return list(d.values())[0]
+        return None
     
     def get_similarity_hashes(self):
         """Get the similarity hashes of the Mach-O file.
@@ -1025,13 +1135,15 @@ class MachO:
 
         Returns:
             similarity_hashes: A dictionary containing the similarity hashes
-                of the Mach-O file. Currently implemented are: dylib_hash.
+                of the Mach-O file. Currently implemented are: dylib_hash,
+                import_hash, export_hash, and symhash.
         """
         similarity_hashes = {}
 
         similarity_hashes["dylib_hash"] = self.get_dylib_hash()
         similarity_hashes["import_hash"] = self.get_import_hash()
         similarity_hashes["export_hash"] = self.get_export_hash()
+        similarity_hashes["symhash"] = self.get_symhash()
 
         return similarity_hashes
 
