@@ -927,7 +927,7 @@ class MachO:
                 continue
             N_TYPE = 0x0e
             N_EXT = 0x01
-            N_SECT = 0x0e
+            N_SECT = 0xe
             N_ABS = 0x02
             str_offset = n_strx
             if str_offset < len(string_table):
