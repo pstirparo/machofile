@@ -305,6 +305,20 @@ FLAGS_MAP = {
     0x80000000: "MH_DYLIB_IN_CACHE",
 }
 
+# Symbol table constants for the "n_type" field in nlist and nlist_64 structures
+# Constant masks for the "n_type" field
+N_STAB = 0xE0  # Mask for STAB (debug) symbols
+N_PEXT = 0x10  # Mask for private external symbols
+N_TYPE = 0x0E  # Mask for symbol type bits
+N_EXT  = 0x01  # Mask for external symbols
+
+# Constants for the "n_type & N_TYPE" values
+N_UNDF = 0x0   # Undefined symbol
+N_ABS  = 0x2   # Absolute symbol
+N_SECT = 0xE   # Section symbol
+N_PBUD = 0xC   # Prebound undefined symbol
+N_INDR = 0xA   # Indirect symbol
+
 # Constants for the "cmd" field in the load command structure
 load_command_types = [
     ("LC_SEGMENT", 0x1),
@@ -925,10 +939,7 @@ class MachO:
                 n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
             if n_strx == 0:
                 continue
-            N_TYPE = 0x0e
-            N_EXT = 0x01
-            N_SECT = 0xe
-            N_ABS = 0x02
+
             str_offset = n_strx
             if str_offset < len(string_table):
                 name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
@@ -1022,7 +1033,7 @@ class MachO:
         This method walks the symbol table, and for each symbol:
             - skips STAB (debug) symbols
             - includes only external symbols (n_type & N_EXT)
-            - includes only undefined symbols (n_type & N_TYPE == N_UNDEF)
+            - includes only undefined symbols (n_type & N_TYPE == N_UNDF)
         The resulting list of symbol names is sorted, joined with commas, and MD5 hashed.
         Returns:
             symhash_dict: dict mapping entity description ("cputype filetype magic") to symhash
@@ -1071,11 +1082,6 @@ class MachO:
             nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
             nlist_size = struct.calcsize(nlist_fmt)
 
-        N_STAB = 0xE0
-        N_TYPE = 0x0e
-        N_EXT  = 0x01
-        N_UNDEF = 0x00
-
         for idx in range(nsyms):
             self.f.seek(symoff + idx * nlist_size)
             entry = self.f.read(nlist_size)
@@ -1092,7 +1098,7 @@ class MachO:
             if not (n_type & N_EXT):
                 continue
             # Only undefined
-            if (n_type & N_TYPE) != N_UNDEF:
+            if (n_type & N_TYPE) != N_UNDF:
                 continue
             if n_strx == 0:
                 continue
