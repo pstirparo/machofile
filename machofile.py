@@ -493,28 +493,10 @@ class MachO:
         md5_hash.update(self.data)
         sha1_hash.update(self.data)
         sha256_hash.update(self.data)
-        # Parse Mach-O header to get filetype and flags
-        self.f.seek(0)
-        magic = struct.unpack("I", self.f.read(4))[0]
-        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
-        self.f.seek(0)
-        if magic in {MH_MAGIC, MH_CIGAM}:
-            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_32)
-            header_data = self.f.read(header_size)
-            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_32, header_data)
-        else:
-            header_size = struct.calcsize(byte_order + MACHO_HEADER_FORMAT_64)
-            header_data = self.f.read(header_size)
-            header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
-        filetype = MACHO_FILETYPE[header[3]]
-        if filetype.startswith('MH_'):
-            filetype = filetype[3:]
-        file_flags = self.decode_flags(header[6])
+
         info_dict = {
             "Filename": filename,
             "Filesize": len(self.data),
-            "Filetype": filetype,
-            "Flags": file_flags,
             "MD5": md5_hash.hexdigest(),
             "SHA1": sha1_hash.hexdigest(),
             "SHA256": sha256_hash.hexdigest(),
