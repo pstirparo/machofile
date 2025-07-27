@@ -108,6 +108,8 @@ from hashlib import sha1
 import struct
 import os
 import io
+from typing import Counter
+import math
 
 
 def two_way_dict(pairs):
@@ -491,6 +493,43 @@ class MachO:
                     decoded_flags.append(flag_name)
         return ", ".join(decoded_flags) if decoded_flags else str(flags_value)
 
+    def calculate_entropy(self, data):
+        """Calculate the entropy of a chunk of data.
+        Based on pefile.SectionStructure.entropy_H.
+        """
+        # self.log.debug(inspect.currentframe().f_code.co_name)
+        if not data:
+            return 0.0
+
+        if type(data) == str:
+            counts = Counter(data)
+            frequencies = ((i / len(data)) for i in counts.values())
+            return - sum(f * math.log(f, 2) for f in frequencies)
+        else:
+            occurences = Counter(bytearray(data))
+            entropy = 0
+            for x in occurences.values():
+                p_x = float(x) / len(data)
+                entropy -= p_x * math.log(p_x, 2)
+            return entropy
+        
+    def _calculate_segment_entropy(self, offset, size):
+        """Read segment data and then calculate its entropy."""
+        if size == 0:
+            return 0.0
+        
+        try:
+            # Read segment data
+            self.f.seek(offset)
+            segment_data = self.f.read(size)
+            
+            # Calculate entropy
+            return self.calculate_entropy(segment_data)
+            
+        except (IOError, OSError):
+            # Return 0 if we can't read the segment data
+            return 0.0
+    
     def get_general_info(self):
         """Get general information about a Mach-O file.
 
@@ -645,6 +684,7 @@ class MachO:
                     "initial_vm_protection": initial_vm_protection,
                     "nsects": nsectors,
                     "flags": flags,
+                    "entropy": self._calculate_segment_entropy(offset, size),
                 }
                 segments.append(segment_dict)
                 
@@ -1688,7 +1728,6 @@ def main():
         print("\n[Exported Symbols]")
         if macho.exported_symbols:
             print_dict(macho.exported_symbols)
-            # print_list(macho.exported_symbols)
         else:
             print("\tNo exported symbols found")
 
