@@ -370,6 +370,8 @@ load_command_types = [
     ("LC_LINKER_OPTIMIZATION_HINT", 0x2E),
     ("LC_VERSION_MIN_TVOS", 0x2F),
     ("LC_VERSION_MIN_WATCHOS", 0x30),
+    ("LC_DYLD_CHAINED_FIXUPS", 0x31),
+    ("LC_DYLD_EXPORTS_TRIE", 0x33 | 0x80000000),
 ]
 
 LOAD_COMMAND_TYPES = two_way_dict(load_command_types)
@@ -443,6 +445,9 @@ class MachO:
         self.load_commands, self.load_commands_set = self.get_macho_load_cmd_table()
         self.segments = self.get_file_segments()
         self.dylib_commands, self.dylib_names = self.get_dylib_commands()
+
+        self.dyld_info, self.dyld_export_trie = self.get_dyld_info_commands()
+
         self.imported_functions = self.get_imported_functions()
         self.exported_symbols = self.get_exported_symbols()
 
@@ -869,8 +874,383 @@ class MachO:
         if not imported_functions_by_dylib["<unknown>"]:
             del imported_functions_by_dylib["<unknown>"]
         return imported_functions_by_dylib
-    
+
+
+    def get_dyld_info_commands(self):
+        """Get the Mach-O dyld info commands.
+
+        Returns:
+            dyld_info: dict containing LC_DYLD_INFO data or None
+            dyld_export_trie: dict containing LC_DYLD_EXPORTS_TRIE data or None
+        """
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+
+        # Skip to load commands
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        dyld_info = None
+        dyld_export_trie = None
+
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            
+            if cmd in [LOAD_COMMAND_TYPES["LC_DYLD_INFO"], LOAD_COMMAND_TYPES["LC_DYLD_INFO_ONLY"]]:
+                # Read LC_DYLD_INFO structure
+                # Format: rebase_off, rebase_size, bind_off, bind_size, weak_bind_off, 
+                #         weak_bind_size, lazy_bind_off, lazy_bind_size, export_off, export_size
+                dyld_info_fmt = byte_order + "IIIIIIIIII"
+                dyld_data = self.f.read(struct.calcsize(dyld_info_fmt))
+                (rebase_off, rebase_size, bind_off, bind_size, weak_bind_off, 
+                weak_bind_size, lazy_bind_off, lazy_bind_size, export_off, export_size) = struct.unpack(dyld_info_fmt, dyld_data)
+                
+                dyld_info = {
+                    'rebase_off': rebase_off,
+                    'rebase_size': rebase_size,
+                    'bind_off': bind_off,
+                    'bind_size': bind_size,
+                    'weak_bind_off': weak_bind_off,
+                    'weak_bind_size': weak_bind_size,
+                    'lazy_bind_off': lazy_bind_off,
+                    'lazy_bind_size': lazy_bind_size,
+                    'export_off': export_off,
+                    'export_size': export_size
+                }
+                
+            elif cmd == LOAD_COMMAND_TYPES["LC_DYLD_EXPORTS_TRIE"]:
+                # Read LC_DYLD_EXPORTS_TRIE structure (same as linkedit_data_command)
+                # Format: data_off, data_size
+                export_trie_fmt = byte_order + "II"
+                export_data = self.f.read(struct.calcsize(export_trie_fmt))
+                data_off, data_size = struct.unpack(export_trie_fmt, export_data)
+                
+                dyld_export_trie = {
+                    'data_off': data_off,
+                    'data_size': data_size
+                }
+            
+            # Move to next command
+            self.f.seek(cmd_start + cmdsize)
+        
+        return dyld_info, dyld_export_trie
+
     def get_exported_symbols(self):
+        """Extract exports using export trie with default filtering"""
+        exports = {}
+        
+        # Try export trie first (modern samples)
+        if self.has_export_trie():
+            exports = self.parse_export_trie()
+        else:
+            # Fallback to your existing symbol table method (old samples)
+            exports = self.get_exported_symbols_oldway() 
+        
+        # Apply your smart __mh_execute_header filtering here
+        # return self._filter_default_exports(exports)
+        return exports
+
+
+    def parse_export_trie(self):
+        """Parse export trie from LC_DYLD_INFO or LC_DYLD_EXPORTS_TRIE.
+        
+        Returns:
+            dict: Dictionary mapping dylib name to list of exported symbol names from the export trie.
+        """
+        exports = []
+        
+        # Check for export trie data sources
+        export_data_sources = []
+        
+        # Get export data from LC_DYLD_INFO if available
+        if hasattr(self, 'dyld_info') and self.dyld_info:
+            export_off = self.dyld_info.get('export_off', 0)
+            export_size = self.dyld_info.get('export_size', 0)
+            if export_off > 0 and export_size > 0:
+                export_data_sources.append((export_off, export_size))
+        
+        # Get export data from LC_DYLD_EXPORTS_TRIE if available  
+        if hasattr(self, 'dyld_export_trie') and self.dyld_export_trie:
+            data_off = self.dyld_export_trie.get('data_off', 0)
+            data_size = self.dyld_export_trie.get('data_size', 0)
+            if data_off > 0 and data_size > 0:
+                export_data_sources.append((data_off, data_size))
+        
+        # Process each export data source
+        for offset, size in export_data_sources:
+            try:
+                self.f.seek(offset)
+                export_data = self.f.read(size)
+                if len(export_data) == size:
+                    trie_exports = self._parse_export_trie_data(export_data)
+                    exports.extend(trie_exports)
+            except (IOError, struct.error):
+                # Continue with other sources if one fails
+                continue
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_exports = []
+        for export in exports:
+            if export not in seen:
+                seen.add(export)
+                unique_exports.append(export)
+        
+        # Return as dictionary with single key for all exports (since export trie doesn't have dylib info)
+        if unique_exports:
+            return {"<export_trie>": unique_exports}
+        else:
+            return {}
+
+    def _parse_export_trie_data(self, data):
+        """Parse the actual export trie data structure.
+        
+        Args:
+            data: Raw export trie data bytes.
+            
+        Returns:
+            list: List of exported symbol names.
+        """
+        exports = []
+        if not data:
+            return exports
+        
+        # Stack for traversing the trie: (offset, prefix)
+        stack = [(0, "")]
+        visited = set()
+        
+        while stack:
+            offset, prefix = stack.pop()
+            
+            # Prevent infinite loops on malformed data
+            if offset in visited or offset >= len(data):
+                continue
+            visited.add(offset)
+            
+            try:
+                # Read terminal size (ULEB128)
+                terminal_size, consumed = self._read_uleb128(data, offset)
+                current_offset = offset + consumed
+                
+                # If terminal size > 0, this node exports a symbol
+                if terminal_size > 0:
+                    # Skip the export info (flags, offset, etc.)
+                    # We only need the symbol name (prefix)
+                    if prefix:  # Don't add empty names
+                        # check if export symbol is __mh_execute_header and skip default export
+                        if prefix == "__mh_execute_header":
+                            # Check if this is the default export at offset 0
+                            file_offset = self._get_symbol_file_offset(prefix)
+                            if file_offset == 0:
+                                # Skip default export
+                                current_offset += terminal_size
+                                continue
+
+                        exports.append(prefix)
+                    
+                    # Skip over the terminal data
+                    current_offset += terminal_size
+                
+                # Read number of child edges
+                if current_offset >= len(data):
+                    continue
+                    
+                num_edges = data[current_offset]
+                current_offset += 1
+                
+                # Process each child edge
+                for _ in range(num_edges):
+                    if current_offset >= len(data):
+                        break
+                    
+                    # Read edge label (null-terminated string)
+                    label_start = current_offset
+                    while current_offset < len(data) and data[current_offset] != 0:
+                        current_offset += 1
+                    
+                    if current_offset >= len(data):
+                        break
+                        
+                    # Extract label
+                    label = data[label_start:current_offset].decode('utf-8', errors='replace')
+                    current_offset += 1  # Skip null terminator
+                    
+                    # Read child node offset (ULEB128)
+                    if current_offset >= len(data):
+                        break
+                        
+                    child_offset, consumed = self._read_uleb128(data, current_offset)
+                    current_offset += consumed
+                    
+                    # Add child to stack with concatenated prefix
+                    new_prefix = prefix + label
+                    stack.append((child_offset, new_prefix))
+                    
+            except (IndexError, UnicodeDecodeError, struct.error):
+                # Skip malformed nodes
+                continue
+        
+        return exports
+
+    def _get_symbol_file_offset(self, symbol_name):
+        """Get the file offset for a given symbol name by looking it up in the symbol table.
+        
+        Args:
+            symbol_name: Name of the symbol to find.
+            
+        Returns:
+            int: File offset of the symbol, or None if not found.
+        """
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+
+        # Skip to load commands
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        # Find LC_SYMTAB
+        symtab = None
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            rest_of_cmd = self.f.read(cmdsize - 8)
+            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, 
+                                    full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+                break
+            self.f.seek(cmd_start + cmdsize)
+
+        if not symtab:
+            return None
+
+        # Parse symbol table to find the symbol
+        symoff = symtab[2]
+        nsyms = symtab[3]
+        stroff = symtab[4]
+        strsize = symtab[5]
+
+        # Read string table
+        self.f.seek(stroff)
+        string_table = self.f.read(strsize)
+
+        # Read symbol table
+        self.f.seek(symoff)
+        if is_64_bit:
+            nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+        else:
+            nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+            nlist_size = struct.calcsize(nlist_fmt)
+
+        # Search for the symbol
+        for idx in range(nsyms):
+            self.f.seek(symoff + idx * nlist_size)
+            entry = self.f.read(nlist_size)
+            if len(entry) != nlist_size:
+                continue
+                
+            if is_64_bit:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+            else:
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+                
+            if n_strx == 0:
+                continue
+
+            # Get symbol name
+            str_offset = n_strx
+            if str_offset < len(string_table):
+                name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                if not name:
+                    continue
+                current_symbol_name = name.decode(errors="replace")
+                
+                # Check if this is the symbol we're looking for
+                if current_symbol_name == symbol_name:
+                    # Only process defined external symbols (N_SECT and N_EXT)
+                    if (n_type & N_TYPE) == N_SECT and (n_type & N_EXT):
+                        # Calculate file offset from virtual address using segment mapping
+                        file_offset = None
+                        for segment in self.segments:
+                            if (n_value >= segment["vaddr"] and 
+                                n_value < segment["vaddr"] + segment["vsize"]):
+                                # Calculate offset within the segment
+                                offset_in_segment = n_value - segment["vaddr"]
+                                file_offset = segment["offset"] + offset_in_segment
+                                break
+                        
+                        return file_offset
+        
+        return None
+
+    def _read_uleb128(self, data, offset):
+        """Read a ULEB128 encoded integer from data at offset.
+        
+        Args:
+            data: Byte data to read from.
+            offset: Starting offset in data.
+            
+        Returns:
+            tuple: (value, bytes_consumed)
+        """
+        value = 0
+        shift = 0
+        consumed = 0
+        
+        while offset + consumed < len(data):
+            byte = data[offset + consumed]
+            consumed += 1
+            
+            value |= (byte & 0x7F) << shift
+            
+            # Check if this is the last byte (MSB is 0)
+            if (byte & 0x80) == 0:
+                break
+                
+            shift += 7
+            
+            # Prevent infinite loops on malformed data
+            if shift >= 64:
+                break
+        
+        return value, consumed
+
+    def has_export_trie(self):
+        """Check if this Mach-O file has export trie data.
+        
+        Returns:
+            bool: True if export trie data is available.
+        """
+        # Check LC_DYLD_INFO export data
+        if hasattr(self, 'dyld_info') and self.dyld_info:
+            export_size = self.dyld_info.get('export_size', 0)
+            if export_size > 0:
+                return True
+        
+        # Check LC_DYLD_EXPORTS_TRIE
+        if hasattr(self, 'dyld_export_trie') and self.dyld_export_trie:
+            data_size = self.dyld_export_trie.get('data_size', 0)
+            if data_size > 0:
+                return True
+        
+        return False
+
+
+    def get_exported_symbols_oldway(self):
         """Extract exported (defined external) symbols from the Mach-O file.
 
         Returns:
@@ -948,7 +1328,7 @@ class MachO:
                 symbol_name = name.decode(errors="replace")
                 # Only process defined external symbols (N_SECT and N_EXT)
                 if (n_type & N_TYPE) == N_SECT and (n_type & N_EXT):
-                    # Check if this is __mh_execute_header and calculate its file offset
+                    # # Check if this is __mh_execute_header and calculate its file offset
                     if symbol_name == "__mh_execute_header":
                         # Calculate file offset from virtual address using segment mapping
                         file_offset = None
@@ -1273,6 +1653,7 @@ def main():
         print("\n[Exported Functions]")
         if macho.exported_symbols:
             print_dict(macho.exported_symbols)
+            # print_list(macho.exported_symbols)
         else:
             print("\tNo exported symbols found")
 
