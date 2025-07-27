@@ -98,6 +98,58 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 #     uint32_t nlocrel;	        /* number of local relocation entries */
 # };
 
+# struct uuid_command {
+#    uint32_t cmd;
+#    uint32_t cmdsize;
+#    uint8_t uuid[16];
+# };
+
+# struct fat_header {
+#   uint32_t magic;
+#   uint32_t nfat_arch;
+# };
+
+# struct fat_arch {
+#   cpu_type_t cputype;
+#   cpu_subtype_t cpusubtype;
+#   uint32_t offset;
+#   uint32_t size;
+#   uint32_t align;
+# };
+
+# struct CS_SuperBlob {
+#     uint32_t magic;                         /* magic number */
+#     uint32_t length;                        /* total length of SuperBlob */
+#     uint32_t count;                         /* number of index entries following */
+#     CS_BlobIndex index[];                   /* (count) entries */
+# };
+
+# struct CSBlob {
+#     uint32_t magic;
+#     uint32_t length;
+# };
+
+# struct CS_BlobIndex {
+#     uint32_t type;                          /* type of the blob */
+#     uint32_t offset;                        /* offset of the blob */
+#     CSBlob blob;                            /* blob data */
+# };
+
+# struct CS_CodeDirectory {
+#     uint32_t magic;                         /* magic number */
+#     uint32_t length;                        /* total length of CodeDirectory */
+#     uint32_t version;                       /* version of the CodeDirectory format */
+#     uint32_t flags;                         /* flags */
+#     uint32_t hashOffset;                    /* offset of hash area */
+#     uint32_t identOffset;                   /* offset of identifier */
+#     uint32_t nSpecialSlots;                 /* number of special slots */
+#     uint32_t nCodeSlots;                    /* number of code slots */
+#     uint32_t nDataSlots;                    /* number of data slots */
+#     uint32_t nModuleSlots;                  /* number of module slots */
+#     uint32_t codeLimit;                     /* code limit */
+#     uint32_t dataLimit;                     /* data limit */
+# } CS_CodeDirectory
+
 __author__ = "Pasquale Stirparo"
 __version__ = "2025.07.24 alpha"
 __contact__ = "pstirparo@threatresearch.ch"
@@ -129,6 +181,7 @@ DYSYMTAB_COMMAND_FORMAT = "IIIIIIIIIIIIIIIIII"
 EXPORT_TRIE_FORMAT = "II"
 VERSION_COMMAND_FORMAT = "II"
 MAIN_COMMAND_FORMAT = "QQ"
+CODE_SIGNATURE_FORMAT = "II"
 
 STRUCT_SIZEOF_TYPES = {
     "x": 1,
@@ -325,6 +378,12 @@ N_SECT = 0xE   # Section symbol
 N_PBUD = 0xC   # Prebound undefined symbol
 N_INDR = 0xA   # Indirect symbol
 
+# Code signature magic constants
+CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
+CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171
+CSMAGIC_BLOBWRAPPER = 0xFADE0B01
+CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+
 # Constants for the "cmd" field in the load command structure
 load_command_types = [
     ("LC_SEGMENT", 0x1),
@@ -448,6 +507,8 @@ class MachO:
         self.uuid = None
         self.entry_point = None
         self.version_info = None
+        self.code_signature_data = None
+        self.code_signature_info = None
         self.imported_functions = {}
         self.exported_symbols = {}
 
@@ -464,8 +525,9 @@ class MachO:
         (self.load_commands, self.load_commands_set, self.segments, 
         self.dylib_commands, self.dylib_names, self.dyld_info, 
         self.dyld_export_trie, self.uuid, self.entry_point, 
-        self.version_info) = self.parse_all_load_commands()
+        self.version_info, self.code_signature_data) = self.parse_all_load_commands()
 
+        self.code_signature_info = self.parse_code_signature()
         self.imported_functions = self.get_imported_functions()
         self.exported_symbols = self.get_exported_symbols()
 
@@ -850,6 +912,17 @@ class MachO:
                     'raw_version': version,
                     'raw_sdk': sdk
                 }
+            
+            elif cmd == LOAD_COMMAND_TYPES["LC_CODE_SIGNATURE"]:
+                # Read LC_CODE_SIGNATURE structure
+                code_sig_fmt = byte_order + CODE_SIGNATURE_FORMAT
+                code_sig_data = self.f.read(struct.calcsize(code_sig_fmt))
+                dataoff, datasize = struct.unpack(code_sig_fmt, code_sig_data)
+                
+                code_signature_data = {
+                    'data_off': dataoff,
+                    'data_size': datasize
+                }
 
             else:
                 # Move to the next command for unhandled command types
@@ -864,8 +937,299 @@ class MachO:
 
         return (load_commands, load_commands_set, segments, dylib_commands, 
                 dylib_names, dyld_info, dyld_export_trie, uuid, entry_point, 
-                version_info)
+                version_info, code_signature_data)
     
+    def parse_code_signature(self):
+        """Parse code signature and entitlements from LC_CODE_SIGNATURE.
+        
+        Returns:
+            dict: Code signature information including signing status, 
+                certificates, and entitlements.
+        """
+        if not hasattr(self, 'code_signature_data') or not self.code_signature_data:
+            return {
+                'signed': False,
+                'signing_status': 'Unsigned',
+                'certificates_info': {'count': 0, 'certificates': []},
+                'entitlements_info': {'count': 0, 'entitlements': {}},
+                'code_directory': None
+            }
+        
+        try:
+            # Read the code signature data
+            self.f.seek(self.code_signature_data['data_off'])
+            signature_data = self.f.read(self.code_signature_data['data_size'])
+            
+            if len(signature_data) < 8:
+                return self._empty_signature_result()
+            
+            # Parse the superblob header
+            magic, length, count = struct.unpack(">III", signature_data[:12])
+            
+            if magic != CSMAGIC_EMBEDDED_SIGNATURE:
+                return self._empty_signature_result()
+            
+            # Parse blob index entries
+            blobs = []
+            offset = 12
+            for i in range(count):
+                if offset + 8 <= len(signature_data):
+                    blob_type, blob_offset = struct.unpack(">II", signature_data[offset:offset + 8])
+                    blobs.append({'type': blob_type, 'offset': blob_offset})
+                    offset += 8
+            
+            # Extract information from blobs
+            certificates = {'count': 0, 'certificates': []}
+            entitlements = {'count': 0, 'entitlements': {}}
+            code_directory = None
+            cert_index = 0
+            
+            for blob in blobs:
+                blob_offset = blob['offset']
+                blob_type = blob['type']
+                
+                if blob_offset >= len(signature_data):
+                    continue
+                    
+                # Parse blob header
+                if blob_offset + 8 <= len(signature_data):
+                    blob_magic, blob_length = struct.unpack(">II", 
+                                                            signature_data[blob_offset:blob_offset + 8])
+                    
+                    # Parse different blob types
+                    if blob_magic == CSMAGIC_EMBEDDED_ENTITLEMENTS:
+                        entitlements = self._parse_entitlements_blob(signature_data, blob_offset, blob_length)
+                    
+                    elif blob_magic == CSMAGIC_BLOBWRAPPER:
+                        cert_info = self._parse_certificate_blob(signature_data, blob_offset, blob_length, cert_index)
+                        if cert_info:
+                            certificates['certificates'].append(cert_info)
+                            cert_index += 1
+                    
+                    elif blob_magic == CSMAGIC_CODEDIRECTORY:
+                        code_directory = self._parse_code_directory_blob(signature_data, blob_offset, blob_length)
+            
+            # Update certificate count
+            certificates['count'] = len(certificates['certificates'])
+            
+            # Determine signing status
+            signing_status = self._determine_signing_status(certificates, code_directory)
+            
+            return {
+                'signed': certificates['count'] > 0 or code_directory is not None,
+                'signing_status': signing_status,
+                'certificates_info': certificates,
+                'entitlements_info': entitlements,
+                'code_directory': code_directory
+            }
+            
+        except (struct.error, IOError, UnicodeDecodeError) as e:
+            return self._empty_signature_result()
+
+    def _empty_signature_result(self):
+        """Return empty signature result structure."""
+        return {
+            'signed': False,
+            'signing_status': 'Unsigned',
+            'certificates_info': {'count': 0, 'certificates': []},
+            'entitlements_info': {'count': 0, 'entitlements': {}},
+            'code_directory': None
+        }
+
+    def _parse_entitlements_blob(self, signature_data, offset, length):
+        """Parse entitlements from embedded entitlements blob."""
+        entitlements = {}
+        
+        try:
+            # Skip blob header (8 bytes) to get to XML data
+            xml_start = offset + 8
+            xml_end = offset + length
+            
+            if xml_end > len(signature_data):
+                return entitlements
+                
+            xml_data = signature_data[xml_start:xml_end]
+            xml_string = xml_data.decode('utf-8', errors='ignore')
+            
+            # XML parsing for entitlements, looking for <key>entitlement-name</key> patterns
+            import re
+            
+            # Find boolean entitlements (true/false)
+            bool_pattern = r'<key>([^<]+)</key>\s*<(true|false)/>'
+            bool_matches = re.findall(bool_pattern, xml_string, re.IGNORECASE)
+            
+            for key, value_type in bool_matches:
+                entitlements[key.strip()] = {
+                    'type': 'boolean',
+                    'value': True if value_type.lower() == 'true' else False
+                }
+            
+            # Find string entitlements
+            string_pattern = r'<key>([^<]+)</key>\s*<string>([^<]*)</string>'
+            string_matches = re.findall(string_pattern, xml_string, re.IGNORECASE)
+            
+            for key, value in string_matches:
+                entitlements[key.strip()] = {
+                    'type': 'string',
+                    'value': value.strip()
+                }
+            
+            # Find array entitlements
+            array_pattern = r'<key>([^<]+)</key>\s*<array>(.*?)</array>'
+            array_matches = re.findall(array_pattern, xml_string, re.DOTALL | re.IGNORECASE)
+            
+            for key, array_content in array_matches:
+                # Extract string values from array
+                string_pattern = r'<string>([^<]+)</string>'
+                string_values = re.findall(string_pattern, array_content)
+                
+                entitlements[key.strip()] = {
+                    'type': 'array',
+                    'value': string_values
+                }
+            
+            return {
+                'count': len(entitlements),
+                'entitlements': entitlements
+            }
+                    
+        except (UnicodeDecodeError, AttributeError):
+            return {'count': 0, 'entitlements': {}}
+
+    def _parse_certificate_blob(self, signature_data, offset, length, cert_index=0):
+        """Parse certificate information from blobwrapper."""
+        try:
+            # Skip blob header (8 bytes) to get to certificate data
+            cert_start = offset + 8
+            cert_end = offset + length
+            
+            if cert_end > len(signature_data):
+                return None
+                
+            cert_data = signature_data[cert_start:cert_end]
+            
+            # Basic certificate parsing, full X.509 parsing would require either external libraries 
+            # or a lot of manual work. The idea behind is to extract basic information about the certificate.
+            # If the binary is signed then the user can follow up with external tools to extract all information.
+            cert_info = {
+                'index': cert_index,
+                'size': len(cert_data),
+                'subject': 'Unable to parse',
+                'issuer': 'Unable to parse',
+                'is_apple_cert': False,
+                'type': 'Unknown'
+            }
+            
+            # Look for common Apple certificate patterns in the raw data
+            cert_string = cert_data.decode('utf-8', errors='ignore')
+            
+            # Simple heuristics for Apple certificates
+            apple_indicators = [
+                ('Apple Inc.', 'Apple Root CA'),
+                ('Apple Root CA', 'Apple Root CA'),
+                ('Developer ID', 'Developer ID Certificate'),
+                ('Mac App Store', 'Mac App Store Certificate'),
+                ('Apple Development', 'Apple Development Certificate'),
+                ('Apple Distribution', 'Apple Distribution Certificate')
+            ]
+            
+            for indicator, cert_type in apple_indicators:
+                if indicator in cert_string:
+                    cert_info['is_apple_cert'] = True
+                    cert_info['type'] = cert_type
+                    if cert_info['subject'] == 'Unable to parse':
+                        cert_info['subject'] = f"Contains: {indicator}"
+                    break
+            
+            return cert_info
+            
+        except (UnicodeDecodeError, struct.error):
+            return None
+
+    def _parse_code_directory_blob(self, signature_data, offset, length):
+        """Parse code directory information."""
+        try:
+            # Skip blob header (8 bytes) and parse code directory structure
+            cd_start = offset + 8
+            
+            if cd_start + 20 > len(signature_data):
+                return None
+                
+            # Parse basic code directory fields
+            cd_data = signature_data[cd_start:cd_start + 20]
+            version, flags, hash_offset, ident_offset, n_special_slots = struct.unpack(">IIIII", cd_data)
+            
+            code_directory = {
+                'version': version,
+                'flags': flags,
+                'hash_offset': hash_offset,
+                'identifier_offset': ident_offset,
+                'special_slots': n_special_slots,
+                'signing_flags': self._decode_signing_flags(flags)
+            }
+            
+            # Try to extract identifier string if possible
+            if ident_offset > 0 and cd_start + ident_offset < len(signature_data):
+                # Find null-terminated string at identifier offset
+                ident_start = cd_start + ident_offset
+                ident_end = signature_data.find(b'\x00', ident_start)
+                if ident_end > ident_start:
+                    identifier = signature_data[ident_start:ident_end].decode('utf-8', errors='ignore')
+                    code_directory['identifier'] = identifier
+            
+            return code_directory
+            
+        except (struct.error, UnicodeDecodeError):
+            return None
+
+    def _decode_signing_flags(self, flags):
+        """Decode code signing flags to human-readable format."""
+        flag_meanings = {
+            0x1: 'Host',
+            0x2: 'Adhoc',
+            0x4: 'ForceHard',
+            0x8: 'Kill',
+            0x10: 'Hard',
+            0x20: 'Runtime',
+            0x40: 'LinkerSigned',
+            0x100: 'AllowUnsignedExecutables',
+            0x200: 'DebuggingAllowed',
+            0x400: 'JustMyCode',
+            0x800: 'Restrict',
+            0x1000: 'Enforcement',
+            0x2000: 'LibraryValidation'
+        }
+        
+        active_flags = []
+        for flag_value, flag_name in flag_meanings.items():
+            if flags & flag_value:
+                active_flags.append(flag_name)
+        
+        return active_flags if active_flags else ['None']
+
+    def _determine_signing_status(self, certificates, code_directory):
+        """Determine the overall signing status of the binary."""
+        if not certificates['count'] and not code_directory:
+            return 'Unsigned'
+        
+        if code_directory:
+            flags = code_directory.get('signing_flags', [])
+            if 'Adhoc' in flags:
+                return 'Ad-hoc signed'
+            elif 'Runtime' in flags:
+                return 'Signed with runtime hardening'
+            elif certificates['count'] > 0:
+                # Check if it's an Apple certificate
+                apple_cert = any(cert.get('is_apple_cert', False) for cert in certificates['certificates'])
+                if apple_cert:
+                    return 'Apple signed'
+                else:
+                    return 'Developer signed'
+        
+        if certificates['count'] > 0:
+            return 'Signed (certificate present)'
+        
+        return 'Signed (code directory only)'
 
     def get_imported_functions(self):
         """Extract imported functions from the Mach-O file.
@@ -979,11 +1343,9 @@ class MachO:
         if self.has_export_trie():
             exports = self.parse_export_trie()
         else:
-            # Fallback to your existing symbol table method (old samples)
+            # For old samples, fallback to existing symbol table method
             exports = self.get_exported_symbols_oldway() 
         
-        # Apply your smart __mh_execute_header filtering here
-        # return self._filter_default_exports(exports)
         return exports
 
 
@@ -1024,7 +1386,7 @@ class MachO:
                 # Continue with other sources if one fails
                 continue
         
-        # Remove duplicates while preserving order
+        # Remove duplicates
         seen = set()
         unique_exports = []
         for export in exports:
@@ -1357,7 +1719,7 @@ class MachO:
                 symbol_name = name.decode(errors="replace")
                 # Only process defined external symbols (N_SECT and N_EXT)
                 if (n_type & N_TYPE) == N_SECT and (n_type & N_EXT):
-                    # # Check if this is __mh_execute_header and calculate its file offset
+                    # Check if this is __mh_execute_header and calculate its file offset
                     if symbol_name == "__mh_execute_header":
                         # Calculate file offset from virtual address using segment mapping
                         file_offset = None
@@ -1640,6 +2002,10 @@ def main():
         "-v", "--version", action="store_true", help="Print version information"
     )
     parser.add_argument(
+        "-cs", "--code_signature", action="store_true", 
+        help="Print code signature and entitlements information"
+    )
+    parser.add_argument(
         "-i", "--imports", action="store_true", help="Print imported symbols"
     )
     parser.add_argument(
@@ -1716,6 +2082,33 @@ def main():
             print(f"\tSDK Version: {macho.version_info['sdk_version']}")
         else:
             print("\tNo version information found")
+
+    if args.all or args.code_signature:
+        print("\n[Code Signature]")
+        if macho.code_signature_info['signed']:
+            print(f"\tSigning Status: {macho.code_signature_info['signing_status']}")
+            
+            if macho.code_signature_info['certificates_info']:
+                print(f"\tCertificates: {macho.code_signature_info['certificates_info']['count']}")
+                for i, cert in enumerate(macho.code_signature_info['certificates_info']['certificates']):
+                    print(f"\t  Certificate {i+1}: {cert.get('subject', 'Unknown')}")
+            
+            if macho.code_signature_info['entitlements_info']['count'] > 0:
+                print(f"\tEntitlements: {macho.code_signature_info['entitlements_info']['count']}")
+                for key, entitlement in macho.code_signature_info['entitlements_info']['entitlements'].items():
+                    if entitlement['type'] == 'array':
+                        print(f"\t  {key}:")
+                        for item in entitlement['value']:
+                            print(f"\t\t{item}")
+                    else:
+                        print(f"\t  {key}: {entitlement['value']}")
+            
+            if macho.code_signature_info['code_directory']:
+                cd = macho.code_signature_info['code_directory']
+                print(f"\tCode Directory Version: {cd.get('version', 'Unknown')}")
+                print(f"\tSigning Flags: {', '.join(cd.get('signing_flags', []))}")
+        else:
+            print("\tNot signed")
 
     if args.all or args.imports:
         print("\n[Imported Functions]")
