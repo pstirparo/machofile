@@ -19,21 +19,26 @@ This is the very first/alpha version still (2023.11.04), so please let me know i
 - Parse File Segments
 - Parse Dylib Commands
 - Parse Dylib List
+- Extract imported function
+- Extract Exported Symbols
+- Hashes: dylib hash, import hash, export hash, symhash
+- Segment entropy calculation
+- Extract Entry point
+- Extract UUID
+- Extract Version Information
 
-_Note: as of now, this has initially be tested against x86 and x86_64 Mach-O samples._
+_Note: as of now, this has initially been tested against x86 and x86_64 Mach-O samples._
 
-**Next features to be implemented:**
-- extract Entry Point 
+**Next features to be implemented (in random order):**
 - Parse Code Signature information
+- support for FAT Binaries
 - Embedded strings
 - File Attributes
-- data entropy calculation
 - flag for suspicious libraries
 - Packer detection
-- Hashes: dylib hash, import hash, export hash, ...
 - prettify output to console
-- add output option to yaml and json
-- add options to parse only specific structures
+- add output option to json
+- ...
 
 ## Credits
 Those are the people that I would like to thank for being the inspiration that led me to write this module:
@@ -45,7 +50,7 @@ Those are the people that I would like to thank for being the inspiration that l
 You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
 
 ### Module version
-It expect to be supplied with either a file path or a data buffer to parse.
+It expects to be supplied with either a file path or a data buffer to parse.
 
 ```
 import machofile
