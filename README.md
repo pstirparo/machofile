@@ -92,13 +92,11 @@ options:
 
 Example output:
 ```
-% python3 machofile.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b 
+% python3 machofile.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
 
 [General File Info]
         Filename:    b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
         Filesize:    54240
-        Filetype:    EXECUTE
-        Flags:       NOUNDEFS, DYLDLINK, TWOLEVEL
         MD5:         20ffe440e4f557b9e03855b5da2b3c9c
         SHA1:        1bf61ecad8568a774f9fba726a254a9603d09f33
         SHA256:      b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
@@ -137,13 +135,13 @@ Example output:
         LC_UUID
 
 [File Segments]
-        SEGNAME    VADDR VSIZE OFFSET SIZE  MAX_VM_PROTECTION INITIAL_VM_PROTECTION NSECTS FLAGS
-        ----------------------------------------------------------------------------------------
-        __PAGEZERO 0     4096  0      0     0                 0                     0      0    
-        __TEXT     4096  28672 0      28672 7                 5                     2      0    
-        __DATA     32768 4096  28672  4096  7                 3                     4      0    
-        __IMPORT   36864 4096  32768  4096  7                 7                     2      0    
-        __LINKEDIT 40960 20480 36864  17376 7                 1                     0      0    
+        SEGNAME    VADDR VSIZE OFFSET SIZE  MAX_VM_PROTECTION INITIAL_VM_PROTECTION NSECTS FLAGS ENTROPY            
+        ------------------------------------------------------------------------------------------------------------
+        __PAGEZERO 0     4096  0      0     0                 0                     0      0     0.0                
+        __TEXT     4096  28672 0      28672 7                 5                     2      0     5.080680410706916  
+        __DATA     32768 4096  28672  4096  7                 3                     4      0     0.1261649636134924 
+        __IMPORT   36864 4096  32768  4096  7                 7                     2      0     0.21493796627555234
+        __LINKEDIT 40960 20480 36864  17376 7                 1                     0      0     6.637864516225949  
 
 [Dylib Commands]
         DYLIB_NAME_OFFSET DYLIB_TIMESTAMP DYLIB_CURRENT_VERSION DYLIB_COMPAT_VERSION DYLIB_NAME                   
@@ -155,8 +153,60 @@ Example output:
         b'/usr/lib/libgcc_s.1.dylib'
         b'/usr/lib/libSystem.B.dylib'
 
+[UUID]
+        d691c242-da49-1081-50d5-4f8991924b06
+
+[Entry Point]
+        Type: LC_UNIXTHREAD
+        Entry Point: 0x23f0
+
+[Version Information]
+        No version information found
+
+[Imported Functions]
+        /usr/lib/libSystem.B.dylib:
+                __NSGetExecutablePath
+                ___stderrp
+                _dlerror
+                _dlopen
+                _dlsym
+                _exit
+                _fclose
+                _fopen
+                _fprintf
+                _fputs$UNIX2003
+                _free
+                _fwrite$UNIX2003
+                _getenv
+                _getpid
+                _getpwnam
+                _lstat
+                _mbstowcs
+                _memcpy
+                _memset
+                _setenv$UNIX2003
+                _setlocale
+                _snprintf
+                _stat
+                _strchr
+                _strdup
+                _strlen
+                _unsetenv$UNIX2003
+
+[Exported Symbols]
+        <unknown>:   
+                _NXArgc
+                _NXArgv
+                ___progname
+                _environ
+                _main
+                start
+
 [Similarity Hashes]
         dylib_hash:  0556bed5dc31bddaee73f3234b3c577b
+        import_hash: 0bae89995ad3900987c49c0bea1d17fe
+        export_hash: 824e359e3d0ad7283d0982bd5da2e8fd
+        symhash:     15e6c1aeba01be1404901f7152213779
 ```
 
 ## Reference/Documentation links:
