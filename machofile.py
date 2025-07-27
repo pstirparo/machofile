@@ -121,8 +121,12 @@ LOAD_COMMAND_FORMAT = "II"
 SEGMENT_COMMAND_FORMAT_32 = "16sIIIIIIII"
 SEGMENT_COMMAND_FORMAT_64 = "16sQQQQIIII"
 DYLIB_COMMAND_FORMAT = "IIII"
+DYLIB_INFO_FORMAT = "IIIIIIIIII"
 SYMTAB_COMMAND_FORMAT = "IIIIII"
 DYSYMTAB_COMMAND_FORMAT = "IIIIIIIIIIIIIIIIII"
+EXPORT_TRIE_FORMAT = "II"
+VERSION_COMMAND_FORMAT = "II"
+MAIN_COMMAND_FORMAT = "QQ"
 
 STRUCT_SIZEOF_TYPES = {
     "x": 1,
@@ -384,6 +388,12 @@ dylib_command_types = [
 
 DYLIB_CMD_TYPES = two_way_dict(dylib_command_types)
 
+PLATFORM_MAP = {
+    LOAD_COMMAND_TYPES["LC_VERSION_MIN_MACOSX"]: "macOS",
+    LOAD_COMMAND_TYPES["LC_VERSION_MIN_IPHONEOS"]: "iOS", 
+    LOAD_COMMAND_TYPES["LC_VERSION_MIN_TVOS"]: "tvOS",
+    LOAD_COMMAND_TYPES["LC_VERSION_MIN_WATCHOS"]: "watchOS",
+}
 
 class MachO:
     """A Mach-O representation.
@@ -431,6 +441,11 @@ class MachO:
         self.segments = []
         self.dylib_commands = []
         self.dylib_names = []
+        self.dyld_info = {}
+        self.dyld_export_trie = {}
+        self.uuid = None
+        self.entry_point = None
+        self.version_info = None
         self.imported_functions = {}
         self.exported_symbols = {}
 
@@ -442,11 +457,12 @@ class MachO:
         """
         self.general_info = self.get_general_info()
         self.header = self.get_macho_header()
-        self.load_commands, self.load_commands_set = self.get_macho_load_cmd_table()
-        self.segments = self.get_file_segments()
-        self.dylib_commands, self.dylib_names = self.get_dylib_commands()
 
-        self.dyld_info, self.dyld_export_trie = self.get_dyld_info_commands()
+        # Consolidated load command parsing
+        (self.load_commands, self.load_commands_set, self.segments, 
+        self.dylib_commands, self.dylib_names, self.dyld_info, 
+        self.dyld_export_trie, self.uuid, self.entry_point, 
+        self.version_info) = self.parse_all_load_commands()
 
         self.imported_functions = self.get_imported_functions()
         self.exported_symbols = self.get_exported_symbols()
@@ -546,18 +562,34 @@ class MachO:
 
         return header_dict
 
-    def get_macho_load_cmd_table(self):
-        """Get the Mach-O load command table.
+
+    def parse_all_load_commands(self):
+        """Parse all load commands in a single pass for efficiency.
+
+        This method parses the Mach-O load commands once and extracts all relevant
+        information including segments, dylib commands, dyld info, UUID, entry point,
+        and version information.
 
         Returns:
-            load_commands: A list of dictionaries containing the Mach-O load commands.
-                Each dictionary contains the following keys: cmd (str), cmdsize (int).
-            load_commands_set: A set of the Mach-O load commands, each itemn as (str).
+            tuple: (load_commands, load_commands_set, segments, dylib_commands, 
+                dylib_names, dyld_info, dyld_export_trie, uuid, entry_point, 
+                version_info)
         """
+        # Initialize return variables
         load_commands = []
+        segments = []
+        dylib_commands = []
+        dylib_names = []
+        dyld_info = None
+        dyld_export_trie = None
+        uuid = None
+        entry_point = None
+        version_info = None
+
         self.f.seek(0)
         # Read the magic value to determine byte order and architecture
         magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
         byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
 
         # Depending on architecture, read the correct Mach-O header
@@ -579,98 +611,31 @@ class MachO:
 
         # Parse each load command
         for _ in range(ncmds):
-            cmd_data = self.f.read(struct.calcsize(byte_order + LOAD_COMMAND_FORMAT))
-            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, cmd_data)
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            
+            # Store load command info
             load_commands.append({"cmd": LOAD_COMMAND_TYPES[cmd], "cmdsize": cmdsize})
-            # Move the file pointer past this load command to the start of the next one
-            self.f.seek(
-                self.f.tell()
-                + cmdsize
-                - struct.calcsize(byte_order + LOAD_COMMAND_FORMAT)
-            )
 
-        loadcommans_set = set(load_command["cmd"] for load_command in load_commands)
-        if "LC_SEGMENT_64" in loadcommans_set:
-            loadcommans_set.remove("LC_SEGMENT_64")
-        if "LC_SEGMENT" in loadcommans_set:
-            loadcommans_set.remove("LC_SEGMENT")
-
-        return load_commands, loadcommans_set
-
-    def get_file_segments(self):
-        """Get the Mach-O segments.
-
-        Returns:
-            segments: A list of dictionaries, each containing the Mach-O segments.
-                More specifically: segname (str), vaddr (int), vsize (int), offset (int),
-                size (int), max_vm_protection (int), initial_vm_protection (int),
-                nsects (int), flags (int).
-        """
-        self.f.seek(0)
-        segments = []
-
-        magic = struct.unpack("I", self.f.read(4))[0]
-        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
-
-        # Adjust the position to skip cputype and cpusubtype
-        self.f.seek(12, 1)
-
-        # Get number of load commands from header
-        ncmds = struct.unpack("I", self.f.read(4))[0]
-
-        # Skip over the rest of the Mach-O header to reach load commands
-        if is_64_bit:
-            self.f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
-        else:
-            self.f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
-
-        # Process each load command
-        for _ in range(ncmds):
-            # Read command type and size
-            cmd, cmdsize = struct.unpack(
-                byte_order + LOAD_COMMAND_FORMAT, self.f.read(8)
-            )
-
-            # If it's an LC_SEGMENT, process it
-            if (
-                cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"]
-                or cmd == LOAD_COMMAND_TYPES["LC_SEGMENT_64"]
-            ):
+            # Process segments (LC_SEGMENT or LC_SEGMENT_64)
+            if (cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"] or 
+                cmd == LOAD_COMMAND_TYPES["LC_SEGMENT_64"]):
+                
                 if is_64_bit:
-                    segment_size = struct.calcsize(
-                        byte_order + SEGMENT_COMMAND_FORMAT_64
-                    )
+                    segment_size = struct.calcsize(byte_order + SEGMENT_COMMAND_FORMAT_64)
                     seg_data = self.f.read(segment_size)
-                    (
-                        segname,
-                        vaddr,
-                        vsize,
-                        offset,
-                        size,
-                        max_vm_protection,
-                        initial_vm_protection,
-                        nsectors,
-                        flags,
-                    ) = struct.unpack(SEGMENT_COMMAND_FORMAT_64, seg_data)
+                    (segname, vaddr, vsize, offset, size, max_vm_protection,
+                    initial_vm_protection, nsectors, flags) = struct.unpack(
+                        byte_order + SEGMENT_COMMAND_FORMAT_64, seg_data)
                 else:
-                    segment_size = struct.calcsize(
-                        byte_order + SEGMENT_COMMAND_FORMAT_32
-                    )
+                    segment_size = struct.calcsize(byte_order + SEGMENT_COMMAND_FORMAT_32)
                     seg_data = self.f.read(segment_size)
-                    (
-                        segname,
-                        vaddr,
-                        vsize,
-                        offset,
-                        size,
-                        max_vm_protection,
-                        initial_vm_protection,
-                        nsectors,
-                        flags,
-                    ) = struct.unpack(SEGMENT_COMMAND_FORMAT_32, seg_data)
+                    (segname, vaddr, vsize, offset, size, max_vm_protection,
+                    initial_vm_protection, nsectors, flags) = struct.unpack(
+                        byte_order + SEGMENT_COMMAND_FORMAT_32, seg_data)
+                
                 segname = segname.decode("utf-8").rstrip("\0")
-                tmp_dict = {
+                segment_dict = {
                     "segname": segname,
                     "vaddr": vaddr,
                     "vsize": vsize,
@@ -681,78 +646,186 @@ class MachO:
                     "nsects": nsectors,
                     "flags": flags,
                 }
-                segments.append((tmp_dict))
-                # Move to the next command
-                self.f.seek(cmdsize - segment_size - 8, 1)
-            else:
-                # Move to the next command
-                self.f.seek(cmdsize - 8, 1)
-        return segments
+                segments.append(segment_dict)
+                
+                # Move to the next command (skip sections for now)
+                self.f.seek(cmd_start + cmdsize)
 
-    def get_dylib_commands(self):
-        """Get the Mach-O dylib commands.
-
-        Returns:
-            dylib_full_info: A list of dictionaries, each containing the Mach-O dylib commands.
-                Each dictionary contains the following key/value pairs: dylib_name_offset (int),
-                dylib_timestamp (int),
-                dylib_current_version (int), dylib_compat_version (int), dylib_name (str).
-            dylib_names: A list of the Mach-O dylib names. Each entry is represented in
-                its raw form as binary string (bytes).
-        """
-        self.f.seek(0)
-        dylib_full_info = []
-        dylib_names = []
-
-        magic = struct.unpack("I", self.f.read(4))[0]
-        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
-
-        # Adjust the position to skip cputype and cpusubtype
-        self.f.seek(12, 1)
-
-        # Get number of load commands from header
-        ncmds = struct.unpack("I", self.f.read(4))[0]
-
-        # Skip over the rest of the Mach-O header to reach load commands
-        if is_64_bit:
-            self.f.seek(12, 1)  # Skip the remainder of the 64-bit Mach-O header
-        else:
-            self.f.seek(8, 1)  # Skip the remainder of the 32-bit Mach-O header
-
-        # Process each load command
-        for _ in range(ncmds):
-            # Read command type and size
-            cmd, cmdsize = struct.unpack(
-                byte_order + LOAD_COMMAND_FORMAT, self.f.read(8)
-            )
-
-            # If it's an LC_SEGMENT, process it
-            if cmd in DYLIB_CMD_TYPES:
+            # Process dylib commands (LC_LOAD_DYLIB, LC_ID_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB)
+            elif cmd in [LOAD_COMMAND_TYPES["LC_LOAD_DYLIB"], 
+                        LOAD_COMMAND_TYPES["LC_ID_DYLIB"],
+                        LOAD_COMMAND_TYPES["LC_LOAD_WEAK_DYLIB"],
+                        LOAD_COMMAND_TYPES["LC_REEXPORT_DYLIB"]]:
+                
                 dylib_size = struct.calcsize(byte_order + DYLIB_COMMAND_FORMAT)
                 dylib_data = self.f.read(dylib_size)
-                (
-                    dylib_name_offset,
-                    dylib_timestamp,
-                    dylib_current_version,
-                    dylib_compat_version,
-                ) = struct.unpack(DYLIB_COMMAND_FORMAT, dylib_data)
+                (dylib_name_offset, dylib_timestamp, dylib_current_version,
+                dylib_compat_version) = struct.unpack(
+                    byte_order + DYLIB_COMMAND_FORMAT, dylib_data)
 
                 dylib_name_size = cmdsize - dylib_name_offset
                 dylib_name = self.f.read(dylib_name_size).rstrip(b"\x00")
-                tmp_dict = {
+                
+                dylib_dict = {
                     "dylib_name_offset": dylib_name_offset,
                     "dylib_timestamp": dylib_timestamp,
                     "dylib_current_version": dylib_current_version,
                     "dylib_compat_version": dylib_compat_version,
                     "dylib_name": dylib_name,
                 }
-                dylib_full_info.append((tmp_dict))
+                dylib_commands.append(dylib_dict)
                 dylib_names.append(dylib_name)
+
+            # Process LC_DYLD_INFO and LC_DYLD_INFO_ONLY
+            elif cmd in [LOAD_COMMAND_TYPES["LC_DYLD_INFO"], 
+                        LOAD_COMMAND_TYPES["LC_DYLD_INFO_ONLY"]]:
+                
+                # Read LC_DYLD_INFO structure
+                dyld_info_fmt = byte_order + DYLIB_INFO_FORMAT
+                dyld_data = self.f.read(struct.calcsize(dyld_info_fmt))
+                (rebase_off, rebase_size, bind_off, bind_size, weak_bind_off,
+                weak_bind_size, lazy_bind_off, lazy_bind_size, export_off,
+                export_size) = struct.unpack(dyld_info_fmt, dyld_data)
+                
+                dyld_info = {
+                    'rebase_off': rebase_off,
+                    'rebase_size': rebase_size,
+                    'bind_off': bind_off,
+                    'bind_size': bind_size,
+                    'weak_bind_off': weak_bind_off,
+                    'weak_bind_size': weak_bind_size,
+                    'lazy_bind_off': lazy_bind_off,
+                    'lazy_bind_size': lazy_bind_size,
+                    'export_off': export_off,
+                    'export_size': export_size
+                }
+
+            # Process LC_DYLD_EXPORTS_TRIE
+            elif cmd == LOAD_COMMAND_TYPES["LC_DYLD_EXPORTS_TRIE"]:
+                
+                # Read LC_DYLD_EXPORTS_TRIE structure (linkedit_data_command format)
+                export_trie_fmt = byte_order + EXPORT_TRIE_FORMAT
+                export_data = self.f.read(struct.calcsize(export_trie_fmt))
+                data_off, data_size = struct.unpack(export_trie_fmt, export_data)
+                
+                dyld_export_trie = {
+                    'data_off': data_off,
+                    'data_size': data_size
+                }
+
+            # Process LC_UUID
+            elif cmd == LOAD_COMMAND_TYPES["LC_UUID"]:
+                
+                # Read UUID (16 bytes)
+                uuid_data = self.f.read(16)
+                # Format UUID as standard string (8-4-4-4-12 format)
+                uuid_bytes = struct.unpack("16B", uuid_data)
+                uuid = "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}".format(
+                    *uuid_bytes)
+
+            # Process LC_MAIN (entry point)
+            elif cmd == LOAD_COMMAND_TYPES["LC_MAIN"]:
+                
+                # Read LC_MAIN structure
+                main_fmt = byte_order + MAIN_COMMAND_FORMAT  # entryoff, stacksize
+                main_data = self.f.read(struct.calcsize(main_fmt))
+                entryoff, stacksize = struct.unpack(main_fmt, main_data)
+                
+                entry_point = {
+                    'type': 'LC_MAIN',
+                    'entryoff': entryoff,
+                    'stacksize': stacksize
+                }
+
+            # Process LC_UNIXTHREAD (alternative entry point for older samples)
+            elif cmd == LOAD_COMMAND_TYPES["LC_UNIXTHREAD"]:
+
+                # Read thread command (architecture-specific)
+                thread_data_size = cmdsize - 8  # Subtract command header size
+                thread_data = self.f.read(thread_data_size)
+                
+                # Parse thread state to extract entry point
+                entry_address = None
+                
+                if len(thread_data) >= 8:  # Need at least flavor and count
+                    # Read flavor and count from thread data
+                    # Note: currently extracted but not used, keeping them for documentation purposes
+                    flavor, count = struct.unpack(byte_order + "II", thread_data[:8])
+                    
+                    # Parse based on CPU type from header
+                    self.f.seek(4)  # Skip magic, read cputype
+                    cputype = struct.unpack(byte_order + "I", self.f.read(4))[0]
+                    self.f.seek(cmd_start + 8 + thread_data_size)  # Return to correct position
+                    
+                    # Extract entry point based on architecture
+                    if cputype == CPU_TYPE_X86_64 and len(thread_data) >= 136:
+                        # x86_64: RIP is at offset 8 (header) + 16*8 (registers) = 136 bytes
+                        rip_offset = 8 + 16 * 8  # Skip flavor/count + 16 64-bit registers to RIP
+                        if len(thread_data) >= rip_offset + 8:
+                            entry_address = struct.unpack(byte_order + "Q", 
+                                                        thread_data[rip_offset:rip_offset + 8])[0]
+                    
+                    elif cputype == CPU_TYPE_X86 and len(thread_data) >= 44:
+                        # x86_32: EIP is at offset 8 (header) + 10*4 (registers) = 48 bytes  
+                        eip_offset = 8 + 10 * 4  # Skip flavor/count + 10 32-bit registers to EIP
+                        if len(thread_data) >= eip_offset + 4:
+                            entry_address = struct.unpack(byte_order + "I", 
+                                                        thread_data[eip_offset:eip_offset + 4])[0]
+                    
+                    elif cputype == CPU_TYPE_ARM64 and len(thread_data) >= 272:
+                        # ARM64: PC is at offset 8 + 29*8 + 8 + 8 = 248 bytes
+                        pc_offset = 8 + 29 * 8 + 8 + 8  # Skip to PC register
+                        if len(thread_data) >= pc_offset + 8:
+                            entry_address = struct.unpack(byte_order + "Q", 
+                                                        thread_data[pc_offset:pc_offset + 8])[0]
+                
+                entry_point = {
+                    'type': 'LC_UNIXTHREAD',
+                    'entry_address': entry_address,
+                    'thread_data_size': thread_data_size,
+                }
+
+            # Process LC_VERSION_MIN_MACOSX and similar version commands
+            elif cmd in [LOAD_COMMAND_TYPES["LC_VERSION_MIN_MACOSX"],
+                        LOAD_COMMAND_TYPES["LC_VERSION_MIN_IPHONEOS"],
+                        LOAD_COMMAND_TYPES["LC_VERSION_MIN_TVOS"],
+                        LOAD_COMMAND_TYPES["LC_VERSION_MIN_WATCHOS"]]:
+                
+                # Read version_min_command structure
+                version_fmt = byte_order + VERSION_COMMAND_FORMAT  # version, sdk
+                version_data = self.f.read(struct.calcsize(version_fmt))
+                version, sdk = struct.unpack(version_fmt, version_data)
+                
+                # Convert version numbers to readable format (major.minor.patch)
+                def version_to_string(ver):
+                    major = (ver >> 16) & 0xFFFF
+                    minor = (ver >> 8) & 0xFF
+                    patch = ver & 0xFF
+                    return f"{major}.{minor}.{patch}"
+                
+                version_info = {
+                    'platform': PLATFORM_MAP.get(cmd, f"Unknown (0x{cmd:x})"),
+                    'min_version': version_to_string(version),
+                    'sdk_version': version_to_string(sdk),
+                    'raw_version': version,
+                    'raw_sdk': sdk
+                }
+
             else:
-                # Move to the next command
-                self.f.seek(cmdsize - 8, 1)
-        return dylib_full_info, dylib_names
+                # Move to the next command for unhandled command types
+                self.f.seek(cmd_start + cmdsize)
+
+        # Create load commands set (excluding segment variants for consistency)
+        load_commands_set = set(load_command["cmd"] for load_command in load_commands)
+        if "LC_SEGMENT_64" in load_commands_set:
+            load_commands_set.remove("LC_SEGMENT_64")
+        if "LC_SEGMENT" in load_commands_set:
+            load_commands_set.remove("LC_SEGMENT")
+
+        return (load_commands, load_commands_set, segments, dylib_commands, 
+                dylib_names, dyld_info, dyld_export_trie, uuid, entry_point, 
+                version_info)
+    
 
     def get_imported_functions(self):
         """Extract imported functions from the Mach-O file.
@@ -857,72 +930,6 @@ class MachO:
             del imported_functions_by_dylib["<unknown>"]
         return imported_functions_by_dylib
 
-
-    def get_dyld_info_commands(self):
-        """Get the Mach-O dyld info commands.
-
-        Returns:
-            dyld_info: dict containing LC_DYLD_INFO data or None
-            dyld_export_trie: dict containing LC_DYLD_EXPORTS_TRIE data or None
-        """
-        self.f.seek(0)
-        magic = struct.unpack("I", self.f.read(4))[0]
-        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
-
-        # Skip to load commands
-        self.f.seek(12, 1)
-        ncmds = struct.unpack("I", self.f.read(4))[0]
-        if is_64_bit:
-            self.f.seek(12, 1)
-        else:
-            self.f.seek(8, 1)
-
-        dyld_info = None
-        dyld_export_trie = None
-
-        for _ in range(ncmds):
-            cmd_start = self.f.tell()
-            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
-            
-            if cmd in [LOAD_COMMAND_TYPES["LC_DYLD_INFO"], LOAD_COMMAND_TYPES["LC_DYLD_INFO_ONLY"]]:
-                # Read LC_DYLD_INFO structure
-                # Format: rebase_off, rebase_size, bind_off, bind_size, weak_bind_off, 
-                #         weak_bind_size, lazy_bind_off, lazy_bind_size, export_off, export_size
-                dyld_info_fmt = byte_order + "IIIIIIIIII"
-                dyld_data = self.f.read(struct.calcsize(dyld_info_fmt))
-                (rebase_off, rebase_size, bind_off, bind_size, weak_bind_off, 
-                weak_bind_size, lazy_bind_off, lazy_bind_size, export_off, export_size) = struct.unpack(dyld_info_fmt, dyld_data)
-                
-                dyld_info = {
-                    'rebase_off': rebase_off,
-                    'rebase_size': rebase_size,
-                    'bind_off': bind_off,
-                    'bind_size': bind_size,
-                    'weak_bind_off': weak_bind_off,
-                    'weak_bind_size': weak_bind_size,
-                    'lazy_bind_off': lazy_bind_off,
-                    'lazy_bind_size': lazy_bind_size,
-                    'export_off': export_off,
-                    'export_size': export_size
-                }
-                
-            elif cmd == LOAD_COMMAND_TYPES["LC_DYLD_EXPORTS_TRIE"]:
-                # Read LC_DYLD_EXPORTS_TRIE structure (same as linkedit_data_command)
-                # Format: data_off, data_size
-                export_trie_fmt = byte_order + "II"
-                export_data = self.f.read(struct.calcsize(export_trie_fmt))
-                data_off, data_size = struct.unpack(export_trie_fmt, export_data)
-                
-                dyld_export_trie = {
-                    'data_off': data_off,
-                    'data_size': data_size
-                }
-            
-            # Move to next command
-            self.f.seek(cmd_start + cmdsize)
-        
-        return dyld_info, dyld_export_trie
 
     def get_exported_symbols(self):
         """Extract exports using export trie with default filtering"""
@@ -1584,6 +1591,15 @@ def main():
         help="Print Dylib Command Table and Dylib list",
     )
     parser.add_argument(
+        "-u", "--uuid", action="store_true", help="Print UUID"
+    )
+    parser.add_argument(
+        "-ep", "--entry_point", action="store_true", help="Print entry point information"
+    )
+    parser.add_argument(
+        "-v", "--version", action="store_true", help="Print version information"
+    )
+    parser.add_argument(
         "-i", "--imports", action="store_true", help="Print imported symbols"
     )
     parser.add_argument(
@@ -1620,9 +1636,46 @@ def main():
 
     if args.all or args.dylib:
         print("\n[Dylib Commands]")
-        print_list_dict_as_table(macho.dylib_commands)
+        if macho.dylib_commands:
+            print_list_dict_as_table(macho.dylib_commands)
+        else:
+            print("\tNo dylib commands found")
         print("\n[Dylib Names]")
-        print_list(macho.dylib_names)
+        if macho.dylib_names:
+            print_list(macho.dylib_names)
+        else:
+            print("\tNo dylib names found")
+
+    if args.all or args.uuid:
+        print("\n[UUID]")
+        if macho.uuid:
+            print(f"\t{macho.uuid}")
+        else:
+            print("\tNo UUID found")
+
+    if args.all or args.entry_point:
+        print("\n[Entry Point]")
+        if macho.entry_point:
+            if macho.entry_point['type'] == 'LC_MAIN':
+                print(f"\tType: LC_MAIN")
+                print(f"\tEntry Point: 0x{macho.entry_point['entryoff']:x}")
+                print(f"\tStack Size: 0x{macho.entry_point['stacksize']:x}")
+            elif macho.entry_point['type'] == 'LC_UNIXTHREAD':
+                print(f"\tType: LC_UNIXTHREAD")
+                print(f"\tEntry Point: 0x{macho.entry_point['entry_address']:x}")
+            else:
+                print(f"\tType: {macho.entry_point['type']}")
+        else:
+            print("\tNo entry point found")
+
+    if args.all or args.version:
+        print("\n[Version Information]")
+        if macho.version_info:
+            print(f"\tPlatform: {macho.version_info['platform']}")
+            print(f"\tMinimum Version: {macho.version_info['min_version']}")
+            print(f"\tSDK Version: {macho.version_info['sdk_version']}")
+        else:
+            print("\tNo version information found")
 
     if args.all or args.imports:
         print("\n[Imported Functions]")
@@ -1632,7 +1685,7 @@ def main():
             print("\tNo imported functions found")
 
     if args.all or args.exports:
-        print("\n[Exported Functions]")
+        print("\n[Exported Symbols]")
         if macho.exported_symbols:
             print_dict(macho.exported_symbols)
             # print_list(macho.exported_symbols)
