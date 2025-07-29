@@ -28,7 +28,7 @@ This is still a beta (2025.07.29), so please let me know if you try or find bugs
 - Extract Version Information
 - Parse basic Code Signature information
 - Support for FAT (Universal) Binaries
-- add support for JSON output
+- JSON output support (both human-readable and raw formats)
 
 
 _Note: as of now, this has initially been tested against x86, x86_64, arm64, and arm64e Mach-O samples._
@@ -80,21 +80,30 @@ You can now use `machofile.py` directly as a CLI tool. All CLI features are avai
 
 ```
 % python3 machofile.py -h
-usage: machofile.py [-h] -f FILE [--arch ARCH] [-a] [-i] [-hd] [-l] [-sg] [-d] [-sm]
+usage: machofile.py [-h] -f FILE [-a] [-g] [-hd] [-l] [-sg] [-d] [-u] [-ep]
+                    [-v] [-cs] [-i] [-e] [-sm] [--arch ARCH] [-j] [--raw]
 
 Parse Mach-O file structures.
 
 options:
   -h, --help            show this help message and exit
   -f FILE, --file FILE  Path to the file to be parsed
-  --arch ARCH           Architecture to parse (for FAT binaries). If not specified, all architectures are parsed
   -a, --all             Print all info about the file
-  -i, --info            Print general info about the file
+  -g, --general_info    Print general info about the file
   -hd, --header         Print Mach-O header info
   -l, --load_cmd_t      Print Load Command Table and Command list
   -sg, --segments       Print File Segments info
   -d, --dylib           Print Dylib Command Table and Dylib list
+  -u, --uuid            Print UUID
+  -ep, --entry_point    Print entry point information
+  -v, --version         Print version information
+  -cs, --code_signature Print code signature and entitlements information
+  -i, --imports         Print imported symbols
+  -e, --exports         Print exported symbols
   -sm, --similarity     Print similarity hashes
+  --arch ARCH           Show info for specific architecture only (for Universal binaries)
+  -j, --json            Output data in JSON format
+  --raw                 Output raw values in JSON format (use with -j/--json)
 ```
 
 Example output:
@@ -215,6 +224,81 @@ Example output:
         export_hash: 824e359e3d0ad7283d0982bd5da2e8fd
         symhash:     15e6c1aeba01be1404901f7152213779
 ```
+
+### JSON Output
+machofile supports JSON output for programmatic consumption of the parsed data. The JSON output comes in two formats:
+
+#### Human-Readable JSON (Default)
+The default JSON output provides human-readable values with proper formatting applied:
+
+```bash
+% python3 machofile.py -j -hd -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a 
+{
+  "header": {
+    "x86_64": {
+      "magic": "MH_MAGIC_64 (64-bit), 0xFEEDFACF",
+      "cputype": "x86_64",
+      "cpusubtype": "x86_ALL",
+      "filetype": "EXECUTE",
+      "ncmds": 41,
+      "sizeofcmds": 5024,
+      "flags": "NOUNDEFS, DYLDLINK, TWOLEVEL, BINDS_TO_WEAK, PIE"
+    },
+    "arm64": {
+      "magic": "MH_MAGIC_64 (64-bit), 0xFEEDFACF",
+      "cputype": "ARM 64-bit",
+      "cpusubtype": "ARM_ALL",
+      "filetype": "EXECUTE",
+      "ncmds": 41,
+      "sizeofcmds": 5104,
+      "flags": "NOUNDEFS, DYLDLINK, TWOLEVEL, BINDS_TO_WEAK, PIE"
+    }
+  },
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ]
+}
+```
+
+#### Raw JSON Output
+For applications that need to process raw numeric values, use the `--raw` flag:
+
+```bash
+% python3 machofile.py -j --raw -hd -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a
+{
+  "header": {
+    "x86_64": {
+      "magic": 4277009103,
+      "cputype": 16777223,
+      "cpusubtype": 3,
+      "filetype": 2,
+      "ncmds": 41,
+      "sizeofcmds": 5024,
+      "flags": 2162821
+    },
+    "arm64": {
+      "magic": 4277009103,
+      "cputype": 16777228,
+      "cpusubtype": 0,
+      "filetype": 2,
+      "ncmds": 41,
+      "sizeofcmds": 5104,
+      "flags": 2162821
+    }
+  },
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ]
+}
+```
+
+#### JSON Output Options
+- `-j, --json`: Output data in JSON format (human-readable by default)
+- `--raw`: Output raw numeric values instead of formatted strings (must be used with `-j`)
+
+JSON output supports all the same analysis options as the standard output (`-a`, `-hd`, `-l`, `-sg`, etc.) and works with both single-architecture and Universal (FAT) binaries.
 
 ## Reference/Documentation links:
 - https://opensource.apple.com/source/xnu/xnu-2050.18.24/EXTERNAL_HEADERS/mach-o/loader.h
