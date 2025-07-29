@@ -170,6 +170,7 @@ import os
 import io
 from typing import Counter
 import math
+import json
 
 
 def two_way_dict(pairs):
@@ -2211,6 +2212,98 @@ class MachO:
 
         return similarity_hashes
 
+# --- JSON Helper Functions ---
+def make_json_serializable(data):
+    """Convert data structures to be JSON serializable."""
+    if isinstance(data, dict):
+        return {k: make_json_serializable(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [make_json_serializable(item) for item in data]
+    elif isinstance(data, set):
+        return sorted(list(data))
+    elif isinstance(data, bytes):
+        try:
+            # Try to decode as UTF-8 first
+            return data.decode('utf-8')
+        except UnicodeDecodeError:
+            # If that fails, use repr() to show bytes representation
+            return repr(data)
+    elif isinstance(data, (int, float, str, bool, type(None))):
+        return data
+    else:
+        # For other types, convert to string representation
+        return str(data)
+
+def collect_all_data(macho, args, target_arch=None):
+    """Collect all requested data into a dictionary structure for JSON output."""
+    data = {}
+    
+    def get_arch_data(attr_name):
+        """Get attribute data for target architecture or all architectures."""
+        if target_arch:
+            macho_instance = macho.get_macho_for_arch(target_arch)
+            return getattr(macho_instance, attr_name, None) if macho_instance else None
+        else:
+            return getattr(macho, attr_name, None)
+    
+    # General info
+    if args.all or args.general_info:
+        data['general_info'] = macho.get_general_info(target_arch)
+    
+    # Header
+    if args.all or args.header:
+        data['header'] = macho.get_macho_header(target_arch)
+    
+    # Load commands
+    if args.all or args.load_cmd_t:
+        data['load_commands'] = get_arch_data('load_commands')
+        data['load_commands_set'] = get_arch_data('load_commands_set')
+    
+    # Segments
+    if args.all or args.segments:
+        data['segments'] = get_arch_data('segments')
+    
+    # Dylib info
+    if args.all or args.dylib:
+        data['dylib_commands'] = get_arch_data('dylib_commands')
+        data['dylib_names'] = get_arch_data('dylib_names')
+    
+    # UUID
+    if args.all or args.uuid:
+        data['uuid'] = get_arch_data('uuid')
+    
+    # Entry point
+    if args.all or args.entry_point:
+        data['entry_point'] = get_arch_data('entry_point')
+    
+    # Version info
+    if args.all or args.version:
+        data['version_info'] = get_arch_data('version_info')
+    
+    # Code signature
+    if args.all or args.code_signature:
+        data['code_signature_info'] = get_arch_data('code_signature_info')
+    
+    # Imports
+    if args.all or args.imports:
+        data['imported_functions'] = macho.get_imported_functions(target_arch)
+    
+    # Exports  
+    if args.all or args.exports:
+        data['exported_symbols'] = macho.get_exported_symbols(target_arch)
+    
+    # Similarity hashes
+    if args.all or args.similarity:
+        data['similarity_hashes'] = macho.get_similarity_hashes(target_arch)
+    
+    # Add architecture info for context
+    if macho.is_fat:
+        data['architectures'] = macho.get_architectures()
+        if target_arch:
+            data['target_architecture'] = target_arch
+    
+    return data
+
 # --- CLI Helper Functions ---
 import argparse
 
@@ -2319,6 +2412,9 @@ def main():
     parser.add_argument(
         "--arch", type=str, help="Show info for specific architecture only (for Universal binaries)"
     )
+    parser.add_argument(
+        "-j", "--json", action="store_true", help="Output data in JSON format"
+    )
 
     args = parser.parse_args()
     file_path = args.file
@@ -2333,6 +2429,16 @@ def main():
     if target_arch and target_arch not in available_archs:
         print(f"Error: Architecture '{target_arch}' not found in binary.")
         print(f"Available architectures: {', '.join(available_archs)}")
+        return
+    
+    # Handle JSON output mode
+    if args.json:
+        # Collect all requested data
+        data = collect_all_data(macho, args, target_arch)
+        
+        # Make data JSON serializable and output
+        json_data = make_json_serializable(data)
+        print(json.dumps(json_data, indent=2))
         return
     
     # Show architectures info if FAT binary and no specific arch requested

@@ -28,6 +28,7 @@ This is still a beta (2025.07.29), so please let me know if you try or find bugs
 - Extract Version Information
 - Parse basic Code Signature information
 - Support for FAT (Universal) Binaries
+- add support for JSON output
 
 
 _Note: as of now, this has initially been tested against x86, x86_64, arm64, and arm64e Mach-O samples._
@@ -38,7 +39,6 @@ _Note: as of now, this has initially been tested against x86, x86_64, arm64, and
 - flag for suspicious libraries
 - Packer detection
 - prettify output to console
-- add output option to json
 - ...
 
 ## Credits
