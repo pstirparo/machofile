@@ -842,6 +842,71 @@ class MachO:
                     decoded_flags.append(flag_name)
         return ", ".join(decoded_flags) if decoded_flags else str(flags_value)
 
+    # --- Header Formatting Helper Functions ---
+    def format_magic_value(self, magic_val):
+        """Format magic value for human-readable display."""
+        magic_str = MAGIC_MAP.get(magic_val, magic_val)
+        if isinstance(magic_str, str):
+            return f"{magic_str}, 0x{magic_val:08X}"
+        else:
+            return f"0x{magic_val:08X}"
+    
+    def format_file_type(self, filetype):
+        """Format file type for human-readable display."""
+        filetype_str = MACHO_FILETYPE.get(filetype, f"UNKNOWN_0x{filetype:x}")
+        if filetype_str.startswith('MH_'):
+            return filetype_str[3:]
+        return filetype_str
+    
+    def format_header_for_display(self, raw_header):
+        """Format raw header dictionary for human-readable display."""
+        return {
+            "magic": self.format_magic_value(raw_header["magic"]),
+            "cputype": CPU_TYPE_MAP.get(raw_header["cputype"], raw_header["cputype"]),
+            "cpusubtype": self.decode_cpusubtype(raw_header["cputype"], raw_header["cpusubtype"]),
+            "filetype": self.format_file_type(raw_header["filetype"]),
+            "ncmds": raw_header["ncmds"],
+            "sizeofcmds": raw_header["sizeofcmds"],
+            "flags": self.decode_flags(raw_header["flags"]),
+        }
+    
+    def format_load_command(self, cmd_value):
+        """Format load command for human-readable display."""
+        return LOAD_COMMAND_TYPES.get(cmd_value, f"UNKNOWN_0x{cmd_value:x}")
+    
+    def format_load_commands_for_display(self, raw_load_commands):
+        """Format raw load commands list for human-readable display."""
+        if not raw_load_commands:
+            return raw_load_commands
+        return [
+            {
+                "cmd": self.format_load_command(lc["cmd"]),
+                "cmdsize": lc["cmdsize"]
+            }
+            for lc in raw_load_commands
+        ]
+    
+    def format_version_to_string(self, version_int):
+        """Convert version number to readable format (major.minor.patch)."""
+        major = (version_int >> 16) & 0xFFFF
+        minor = (version_int >> 8) & 0xFF
+        patch = version_int & 0xFF
+        return f"{major}.{minor}.{patch}"
+    
+    def format_platform_name(self, platform_cmd):
+        """Format platform command to readable name."""
+        return PLATFORM_MAP.get(platform_cmd, f"Unknown (0x{platform_cmd:x})")
+    
+    def format_version_info_for_display(self, raw_version_info):
+        """Format raw version info for human-readable display."""
+        if not raw_version_info:
+            return raw_version_info
+        return {
+            'platform': self.format_platform_name(raw_version_info['platform_cmd']),
+            'min_version': self.format_version_to_string(raw_version_info['min_version']),
+            'sdk_version': self.format_version_to_string(raw_version_info['sdk_version'])
+        }
+
     def calculate_entropy(self, data):
         """Calculate the entropy of a chunk of data.
         Based on pefile.SectionStructure.entropy_H.
@@ -911,9 +976,9 @@ class MachO:
         """Get the Mach-O header.
 
         Returns:
-            header_dict: A dictionary containing the Mach-O header, more specifically:
-                magic (str), cputype (str), cpusubtype (str), filetype (str), ncmds (int),
-                sizeofcmds (int), flags (str).
+            header_dict: A dictionary containing the raw Mach-O header values:
+                magic (int), cputype (int), cpusubtype (int), filetype (int), ncmds (int),
+                sizeofcmds (int), flags (int).
         """
 
         self.f.seek(0)
@@ -932,20 +997,14 @@ class MachO:
             header_data = self.f.read(header_size)
             header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
 
-        filetype = MACHO_FILETYPE[header[3]]
-        if filetype.startswith('MH_'):
-            filetype = filetype[3:]
-        magic_val = header[0]
-        magic_str = MAGIC_MAP.get(magic_val, magic_val)
-        magic_field = f"{magic_str}, 0x{magic_val:08X}" if isinstance(magic_str, str) else f"0x{magic_val:08X}"
         header_dict = {
-            "magic": magic_field,
-            "cputype": CPU_TYPE_MAP.get(header[1], header[1]),
-            "cpusubtype": self.decode_cpusubtype(header[1], header[2]),
-            "filetype": filetype,
+            "magic": header[0],
+            "cputype": header[1],
+            "cpusubtype": header[2],
+            "filetype": header[3],
             "ncmds": header[4],
             "sizeofcmds": header[5],
-            "flags": self.decode_flags(header[6]),
+            "flags": header[6],
         }
 
         return header_dict
@@ -1003,8 +1062,7 @@ class MachO:
             cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
             
             # Store load command info
-            cmd_name = LOAD_COMMAND_TYPES.get(cmd, f"UNKNOWN_0x{cmd:x}")
-            load_commands.append({"cmd": cmd_name, "cmdsize": cmdsize})
+            load_commands.append({"cmd": cmd, "cmdsize": cmdsize})
 
             # Process segments (LC_SEGMENT or LC_SEGMENT_64)
             if (cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"] or 
@@ -1186,19 +1244,10 @@ class MachO:
                 version_data = self.f.read(struct.calcsize(version_fmt))
                 version, sdk = struct.unpack(version_fmt, version_data)
                 
-                # Convert version numbers to readable format (major.minor.patch)
-                def version_to_string(ver):
-                    major = (ver >> 16) & 0xFFFF
-                    minor = (ver >> 8) & 0xFF
-                    patch = ver & 0xFF
-                    return f"{major}.{minor}.{patch}"
-                
                 version_info = {
-                    'platform': PLATFORM_MAP.get(cmd, f"Unknown (0x{cmd:x})"),
-                    'min_version': version_to_string(version),
-                    'sdk_version': version_to_string(sdk),
-                    'raw_version': version,
-                    'raw_sdk': sdk
+                    'platform_cmd': cmd,
+                    'min_version': version,
+                    'sdk_version': sdk
                 }
             
             elif cmd == LOAD_COMMAND_TYPES["LC_CODE_SIGNATURE"]:
@@ -2492,7 +2541,39 @@ def main():
                     print(f"\tNo {section_name.lower()} found")
 
     print_section_for_arch("General File Info", macho.get_general_info, args.all, args.general_info)
-    print_section_for_arch("Mach-O Header", macho.get_macho_header, args.all, args.header)
+    
+    # Format header data for human-readable display
+    def get_formatted_header(arch=None):
+        raw_header = macho.get_macho_header(arch)
+        if raw_header is None:
+            return None
+        
+        if isinstance(raw_header, dict) and 'magic' in raw_header:
+            # Single architecture case
+            if arch:
+                macho_instance = macho.get_macho_for_arch(arch)
+            else:
+                macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+            if macho_instance:
+                return macho_instance.format_header_for_display(raw_header)
+            return raw_header
+        elif isinstance(raw_header, dict):
+            # Multi-architecture case
+            formatted_data = {}
+            for arch_name, arch_header in raw_header.items():
+                if arch_header:
+                    macho_instance = macho.get_macho_for_arch(arch_name)
+                    if macho_instance:
+                        formatted_data[arch_name] = macho_instance.format_header_for_display(arch_header)
+                    else:
+                        formatted_data[arch_name] = arch_header
+                else:
+                    formatted_data[arch_name] = arch_header
+            return formatted_data
+        else:
+            return raw_header
+    
+    print_section_for_arch("Mach-O Header", get_formatted_header, args.all, args.header)
 
     def get_arch_data(attr_name):
         """Get attribute data for target architecture or all architectures."""
@@ -2502,9 +2583,66 @@ def main():
         else:
             return getattr(macho, attr_name, None)
 
+    # Format load commands for human-readable display
+    def get_formatted_load_commands(arch=None):
+        raw_load_commands = get_arch_data('load_commands')
+        if raw_load_commands is None:
+            return None
+        
+        if isinstance(raw_load_commands, dict) and target_arch is None:
+            # Multi-architecture case
+            formatted_data = {}
+            for arch_name, arch_load_commands in raw_load_commands.items():
+                if arch_load_commands:
+                    macho_instance = macho.get_macho_for_arch(arch_name)
+                    if macho_instance:
+                        formatted_data[arch_name] = macho_instance.format_load_commands_for_display(arch_load_commands)
+                    else:
+                        formatted_data[arch_name] = arch_load_commands
+                else:
+                    formatted_data[arch_name] = arch_load_commands
+            return formatted_data
+        else:
+            # Single architecture case
+            if arch:
+                macho_instance = macho.get_macho_for_arch(arch)
+            else:
+                macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+            if macho_instance and raw_load_commands:
+                return macho_instance.format_load_commands_for_display(raw_load_commands)
+            return raw_load_commands
+
+    def get_formatted_load_commands_set(arch=None):
+        raw_load_commands_set = get_arch_data('load_commands_set')
+        if raw_load_commands_set is None:
+            return None
+        
+        if isinstance(raw_load_commands_set, dict) and target_arch is None:
+            # Multi-architecture case
+            formatted_data = {}
+            for arch_name, arch_set in raw_load_commands_set.items():
+                if arch_set:
+                    macho_instance = macho.get_macho_for_arch(arch_name)
+                    if macho_instance:
+                        formatted_data[arch_name] = {macho_instance.format_load_command(cmd) for cmd in arch_set}
+                    else:
+                        formatted_data[arch_name] = arch_set
+                else:
+                    formatted_data[arch_name] = arch_set
+            return formatted_data
+        else:
+            # Single architecture case
+            if arch:
+                macho_instance = macho.get_macho_for_arch(arch)
+            else:
+                macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+            if macho_instance and raw_load_commands_set:
+                return {macho_instance.format_load_command(cmd) for cmd in raw_load_commands_set}
+            return raw_load_commands_set
+
     if args.all or args.load_cmd_t:
-        load_commands = get_arch_data('load_commands')
-        load_commands_set = get_arch_data('load_commands_set')
+        load_commands = get_formatted_load_commands()
+        load_commands_set = get_formatted_load_commands_set()
         
         if target_arch:
             print(f"\n[Load Cmd table - {target_arch}]")
@@ -2617,7 +2755,38 @@ def main():
 
     print_section_for_arch("UUID", lambda arch: get_arch_data('uuid'), args.all, args.uuid)
     print_section_for_arch("Entry Point", lambda arch: get_arch_data('entry_point'), args.all, args.entry_point)
-    print_section_for_arch("Version Information", lambda arch: get_arch_data('version_info'), args.all, args.version)
+    # Format version info for human-readable display
+    def get_formatted_version_info(arch=None):
+        raw_version_info = get_arch_data('version_info')
+        if raw_version_info is None:
+            return None
+        
+        if isinstance(raw_version_info, dict) and 'platform_cmd' in raw_version_info:
+            # Single architecture case
+            if arch:
+                macho_instance = macho.get_macho_for_arch(arch)
+            else:
+                macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+            if macho_instance:
+                return macho_instance.format_version_info_for_display(raw_version_info)
+            return raw_version_info
+        elif isinstance(raw_version_info, dict):
+            # Multi-architecture case
+            formatted_data = {}
+            for arch_name, arch_version_info in raw_version_info.items():
+                if arch_version_info:
+                    macho_instance = macho.get_macho_for_arch(arch_name)
+                    if macho_instance:
+                        formatted_data[arch_name] = macho_instance.format_version_info_for_display(arch_version_info)
+                    else:
+                        formatted_data[arch_name] = arch_version_info
+                else:
+                    formatted_data[arch_name] = arch_version_info
+            return formatted_data
+        else:
+            return raw_version_info
+    
+    print_section_for_arch("Version Information", get_formatted_version_info, args.all, args.version)
     print_section_for_arch("Code Signature", lambda arch: get_arch_data('code_signature_info'), args.all, args.code_signature)
 
     print_section_for_arch("Imported Functions", macho.get_imported_functions, args.all, args.imports)
