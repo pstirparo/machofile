@@ -997,14 +997,16 @@ class MachO:
             header_data = self.f.read(header_size)
             header = struct.unpack(byte_order + MACHO_HEADER_FORMAT_64, header_data)
 
+        # Return values for mach-o header are all unsigned, so theoretically we should mask them all.
+        # keeping more verbose comments for documentation purposes.
         header_dict = {
-            "magic": header[0],
-            "cputype": header[1],
-            "cpusubtype": header[2],
-            "filetype": header[3],
-            "ncmds": header[4],
-            "sizeofcmds": header[5],
-            "flags": header[6],
+            "magic": header[0] & 0xFFFFFFFF,      # uint32_t - ensure unsigned for consistency, not needed though
+            "cputype": header[1] & 0xFFFFFFFF,    # uint32_t - should be treated as unsigned
+            "cpusubtype": header[2] & 0xFFFFFFFF, # uint32_t - ensure unsigned value
+            "filetype": header[3],                # uint32_t - small positive values, no mask needed
+            "ncmds": header[4],                   # uint32_t - count value, no mask needed
+            "sizeofcmds": header[5],              # uint32_t - size value, no mask needed
+            "flags": header[6] & 0xFFFFFFFF,      # uint32_t - bitmask, must be unsigned
         }
 
         return header_dict
