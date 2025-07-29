@@ -11,7 +11,7 @@ While there are other mach-o parsing modules out there, the motivations behind d
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is still a beta (2025.07.28), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
+This is still a beta (2025.07.29), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
 
 **Current Features:**
 - Parse Mach-O Header
@@ -26,7 +26,7 @@ This is still a beta (2025.07.28), so please let me know if you try or find bugs
 - Extract Entry point
 - Extract UUID
 - Extract Version Information
-- Parse Code Signature information
+- Parse basic Code Signature information
 - Support for FAT (Universal) Binaries
 
 
