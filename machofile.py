@@ -159,7 +159,7 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # } CS_CodeDirectory
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2025.07.24 alpha"
+__version__ = "2025.07.29 beta"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
