@@ -1090,8 +1090,8 @@ class MachO:
                     "vsize": vsize & 0xFFFFFFFFFFFFFFFF if is_64_bit else vsize & 0xFFFFFFFF,  # Virtual size - ensure unsigned
                     "offset": offset & 0xFFFFFFFFFFFFFFFF if is_64_bit else offset & 0xFFFFFFFF, # File offset - ensure unsigned
                     "size": size & 0xFFFFFFFFFFFFFFFF if is_64_bit else size & 0xFFFFFFFF,     # File size - ensure unsigned
-                    "max_vm_protection": max_vm_protection & 0xFFFFFFFF,    # vm_prot_t - protection flags, ensure unsigned
-                    "initial_vm_protection": initial_vm_protection & 0xFFFFFFFF, # vm_prot_t - protection flags, ensure unsigned
+                    "max_vm_protection": max_vm_protection & 0xFFFFFFFF,    # uint32_t - protection flags, ensure unsigned
+                    "initial_vm_protection": initial_vm_protection & 0xFFFFFFFF, # uint32_t - protection flags, ensure unsigned
                     "nsects": nsectors,                                     # uint32_t - section count, small positive value
                     "flags": flags & 0xFFFFFFFF,                           # uint32_t - segment flags bitmask, must be unsigned
                     "entropy": self._calculate_segment_entropy(offset, size),
