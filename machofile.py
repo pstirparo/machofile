@@ -2285,7 +2285,7 @@ def make_json_serializable(data):
         # For other types, convert to string representation
         return str(data)
 
-def collect_all_data(macho, args, target_arch=None):
+def collect_all_data(macho, args, target_arch=None, raw=True):
     """Collect all requested data into a dictionary structure for JSON output."""
     data = {}
     
@@ -2303,12 +2303,101 @@ def collect_all_data(macho, args, target_arch=None):
     
     # Header
     if args.all or args.header:
-        data['header'] = macho.get_macho_header(target_arch)
+        raw_header = macho.get_macho_header(target_arch)
+        if raw and raw_header is not None:
+            data['header'] = raw_header
+        elif raw_header is not None:
+            # Apply formatting
+            if isinstance(raw_header, dict) and 'magic' in raw_header:
+                # Single architecture case
+                if target_arch:
+                    macho_instance = macho.get_macho_for_arch(target_arch)
+                else:
+                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+                if macho_instance:
+                    data['header'] = macho_instance.format_header_for_display(raw_header)
+                else:
+                    data['header'] = raw_header
+            elif isinstance(raw_header, dict):
+                # Multi-architecture case
+                formatted_data = {}
+                for arch_name, arch_header in raw_header.items():
+                    if isinstance(arch_header, dict) and 'magic' in arch_header:
+                        macho_instance = macho.get_macho_for_arch(arch_name)
+                        if macho_instance:
+                            formatted_data[arch_name] = macho_instance.format_header_for_display(arch_header)
+                        else:
+                            formatted_data[arch_name] = arch_header
+                    else:
+                        formatted_data[arch_name] = arch_header
+                data['header'] = formatted_data
+            else:
+                data['header'] = raw_header
     
     # Load commands
     if args.all or args.load_cmd_t:
-        data['load_commands'] = get_arch_data('load_commands')
-        data['load_commands_set'] = get_arch_data('load_commands_set')
+        raw_load_commands = get_arch_data('load_commands')
+        if raw or raw_load_commands is None:
+            data['load_commands'] = raw_load_commands
+        else:
+            # Apply formatting
+            if isinstance(raw_load_commands, list) and raw_load_commands:
+                # Single architecture case
+                if target_arch:
+                    macho_instance = macho.get_macho_for_arch(target_arch)
+                else:
+                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+                if macho_instance:
+                    data['load_commands'] = macho_instance.format_load_commands_for_display(raw_load_commands)
+                else:
+                    data['load_commands'] = raw_load_commands
+            elif isinstance(raw_load_commands, dict):
+                # Multi-architecture case
+                formatted_data = {}
+                for arch_name, arch_load_commands in raw_load_commands.items():
+                    if isinstance(arch_load_commands, list):
+                        macho_instance = macho.get_macho_for_arch(arch_name)
+                        if macho_instance:
+                            formatted_data[arch_name] = macho_instance.format_load_commands_for_display(arch_load_commands)
+                        else:
+                            formatted_data[arch_name] = arch_load_commands
+                    else:
+                        formatted_data[arch_name] = arch_load_commands
+                data['load_commands'] = formatted_data
+            else:
+                data['load_commands'] = raw_load_commands
+        
+        # Load commands set
+        raw_load_commands_set = get_arch_data('load_commands_set')
+        if raw or raw_load_commands_set is None:
+            data['load_commands_set'] = raw_load_commands_set
+        else:
+            # Apply formatting
+            if isinstance(raw_load_commands_set, set) and raw_load_commands_set:
+                # Single architecture case
+                if target_arch:
+                    macho_instance = macho.get_macho_for_arch(target_arch)
+                else:
+                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+                if macho_instance:
+                    data['load_commands_set'] = sorted([macho_instance.format_load_command(cmd) for cmd in raw_load_commands_set])
+                else:
+                    data['load_commands_set'] = sorted(list(raw_load_commands_set))
+            elif isinstance(raw_load_commands_set, dict):
+                # Multi-architecture case
+                formatted_data = {}
+                for arch_name, arch_set in raw_load_commands_set.items():
+                    if isinstance(arch_set, set):
+                        macho_instance = macho.get_macho_for_arch(arch_name)
+                        if macho_instance:
+                            formatted_data[arch_name] = sorted([macho_instance.format_load_command(cmd) for cmd in arch_set])
+                        else:
+                            formatted_data[arch_name] = sorted(list(arch_set))
+                    else:
+                        formatted_data[arch_name] = arch_set
+                data['load_commands_set'] = formatted_data
+            else:
+                data['load_commands_set'] = raw_load_commands_set
     
     # Segments
     if args.all or args.segments:
@@ -2329,7 +2418,36 @@ def collect_all_data(macho, args, target_arch=None):
     
     # Version info
     if args.all or args.version:
-        data['version_info'] = get_arch_data('version_info')
+        raw_version_info = get_arch_data('version_info')
+        if raw or raw_version_info is None:
+            data['version_info'] = raw_version_info
+        else:
+            # Apply formatting
+            if isinstance(raw_version_info, dict) and 'platform_cmd' in raw_version_info:
+                # Single architecture case
+                if target_arch:
+                    macho_instance = macho.get_macho_for_arch(target_arch)
+                else:
+                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
+                if macho_instance:
+                    data['version_info'] = macho_instance.format_version_info_for_display(raw_version_info)
+                else:
+                    data['version_info'] = raw_version_info
+            elif isinstance(raw_version_info, dict):
+                # Multi-architecture case
+                formatted_data = {}
+                for arch_name, arch_version_info in raw_version_info.items():
+                    if isinstance(arch_version_info, dict) and 'platform_cmd' in arch_version_info:
+                        macho_instance = macho.get_macho_for_arch(arch_name)
+                        if macho_instance:
+                            formatted_data[arch_name] = macho_instance.format_version_info_for_display(arch_version_info)
+                        else:
+                            formatted_data[arch_name] = arch_version_info
+                    else:
+                        formatted_data[arch_name] = arch_version_info
+                data['version_info'] = formatted_data
+            else:
+                data['version_info'] = raw_version_info
     
     # Code signature
     if args.all or args.code_signature:
@@ -2466,9 +2584,16 @@ def main():
     parser.add_argument(
         "-j", "--json", action="store_true", help="Output data in JSON format"
     )
+    parser.add_argument(
+        "--raw", action="store_true", help="Output raw values in JSON format (use with -j/--json)"
+    )
 
     args = parser.parse_args()
     file_path = args.file
+
+    # Validate --raw flag usage
+    if args.raw and not args.json:
+        parser.error("--raw can only be used with -j/--json")
 
     macho = UniversalMachO(file_path=file_path)
     macho.parse()
@@ -2484,8 +2609,8 @@ def main():
     
     # Handle JSON output mode
     if args.json:
-        # Collect all requested data
-        data = collect_all_data(macho, args, target_arch)
+        # Collect data (formatted by default, raw if --raw flag is used)
+        data = collect_all_data(macho, args, target_arch, raw=args.raw)
         
         # Make data JSON serializable and output
         json_data = make_json_serializable(data)
