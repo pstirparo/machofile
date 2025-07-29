@@ -98,6 +98,14 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 #     uint32_t nlocrel;	        /* number of local relocation entries */
 # };
 
+# struct Nlist {
+#     uint32_t n_strx;
+#     uint8_t n_type;
+#     uint8_t n_sect;
+#     uint16_t n_desc;
+#     uint32_t n_value; # uint32_t for 32-bit architectures, uint64_t for 64-bit architectures
+# }
+
 # struct uuid_command {
 #    uint32_t cmd;
 #    uint32_t cmdsize;
@@ -384,6 +392,9 @@ CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171
 CSMAGIC_BLOBWRAPPER = 0xFADE0B01
 CSMAGIC_CODEDIRECTORY = 0xFADE0C02
 
+# Mach-O dynamic linker constant
+LC_REQ_DYLD = 0x80000000
+
 # Constants for the "cmd" field in the load command structure
 load_command_types = [
     ("LC_SEGMENT", 0x1),
@@ -409,24 +420,24 @@ load_command_types = [
     ("LC_SUB_LIBRARY", 0x15),
     ("LC_TWOLEVEL_HINTS", 0x16),
     ("LC_PREBIND_CKSUM", 0x17),
-    ("LC_LOAD_WEAK_DYLIB", 0x18 | 0x80000000),
+    ("LC_LOAD_WEAK_DYLIB", 0x18 | LC_REQ_DYLD),
     ("LC_SEGMENT_64", 0x19),
     ("LC_ROUTINES_64", 0x1A),
     ("LC_UUID", 0x1B),
-    ("LC_RPATH", 0x1C | 0x80000000),
+    ("LC_RPATH", 0x1C | LC_REQ_DYLD),
     ("LC_CODE_SIGNATURE", 0x1D),
     ("LC_SEGMENT_SPLIT_INFO", 0x1E),
-    ("LC_REEXPORT_DYLIB", 0x1F | 0x80000000),
+    ("LC_REEXPORT_DYLIB", 0x1F | LC_REQ_DYLD),
     ("LC_LAZY_LOAD_DYLIB", 0x20),
     ("LC_ENCRYPTION_INFO", 0x21),
     ("LC_DYLD_INFO", 0x22),
-    ("LC_DYLD_INFO_ONLY", 0x22 | 0x80000000),
-    ("LC_LOAD_UPWARD_DYLIB", 0x23 | 0x80000000),
+    ("LC_DYLD_INFO_ONLY", 0x22 | LC_REQ_DYLD),
+    ("LC_LOAD_UPWARD_DYLIB", 0x23 | LC_REQ_DYLD),
     ("LC_VERSION_MIN_MACOSX", 0x24),
     ("LC_VERSION_MIN_IPHONEOS", 0x25),
     ("LC_FUNCTION_STARTS", 0x26),
     ("LC_DYLD_ENVIRONMENT", 0x27),
-    ("LC_MAIN", 0x28 | 0x80000000),
+    ("LC_MAIN", 0x28 | LC_REQ_DYLD),
     ("LC_DATA_IN_CODE", 0x29),
     ("LC_SOURCE_VERSION", 0x2A),
     ("LC_DYLIB_CODE_SIGN_DRS", 0x2B),
@@ -435,8 +446,10 @@ load_command_types = [
     ("LC_LINKER_OPTIMIZATION_HINT", 0x2E),
     ("LC_VERSION_MIN_TVOS", 0x2F),
     ("LC_VERSION_MIN_WATCHOS", 0x30),
-    ("LC_DYLD_CHAINED_FIXUPS", 0x31),
-    ("LC_DYLD_EXPORTS_TRIE", 0x33 | 0x80000000),
+    ("LC_NOTE", 0x31),
+    ("LC_BUILD_VERSION", 0x32),
+    ("LC_DYLD_EXPORTS_TRIE", 0x33 | LC_REQ_DYLD),
+    ("LC_DYLD_CHAINED_FIXUPS", 0x34 | LC_REQ_DYLD),
 ]
 
 LOAD_COMMAND_TYPES = two_way_dict(load_command_types)
@@ -455,6 +468,278 @@ PLATFORM_MAP = {
     LOAD_COMMAND_TYPES["LC_VERSION_MIN_TVOS"]: "tvOS",
     LOAD_COMMAND_TYPES["LC_VERSION_MIN_WATCHOS"]: "watchOS",
 }
+
+
+class UniversalMachO:
+    """A Universal/FAT Mach-O binary representation.
+    
+    This class handles both regular Mach-O binaries and Universal (FAT) binaries
+    containing multiple architectures. It provides a unified interface that works
+    with both single-architecture and multi-architecture binaries.
+    """
+    
+    def __init__(self, file_path=None, data=None):
+        if file_path is None and data is None:
+            raise ValueError("Must supply either file_path or data")
+        elif file_path is not None:
+            self.file_path = file_path
+            with open(file_path, "rb") as fh:
+                self.data = fh.read()
+        else:
+            self.data = data
+            self.file_path = None
+
+        self.f = io.BytesIO(self.data)
+        
+        # Check if this is a FAT binary
+        self.is_fat = self._is_fat_binary()
+        
+        if self.is_fat:
+            self.architectures = {}
+            self._parse_fat_binary()
+        else:
+            # Single architecture - create single MachO instance
+            self.macho = MachO(data=self.data)
+            self.macho.file_path = self.file_path  # Set the original file path
+    
+    def _is_fat_binary(self):
+        """Check if the binary is a FAT/Universal binary."""
+        if len(self.data) < 4:
+            return False
+        
+        magic = struct.unpack(">I", self.data[:4])[0]
+        return magic in {FAT_MAGIC, FAT_CIGAM, FAT_MAGIC_64, FAT_CIGAM_64}
+    
+    def _parse_fat_binary(self):
+        """Parse FAT binary header and extract individual architectures."""
+        self.f.seek(0)
+        
+        # Read FAT header
+        magic = struct.unpack(">I", self.f.read(4))[0]
+        nfat_arch = struct.unpack(">I", self.f.read(4))[0]
+        
+        # Determine if we need to swap bytes
+        swap_bytes = magic in {FAT_CIGAM, FAT_CIGAM_64}
+        endian = "<" if swap_bytes else ">"
+        
+        if swap_bytes:
+            nfat_arch = struct.unpack("<I", struct.pack(">I", nfat_arch))[0]
+        
+        # Read FAT arch entries
+        for _ in range(nfat_arch):
+            fat_arch_data = self.f.read(20)  # fat_arch is 20 bytes
+            
+            if swap_bytes:
+                cputype, cpusubtype, offset, size, align = struct.unpack("<5I", fat_arch_data)
+            else:
+                cputype, cpusubtype, offset, size, align = struct.unpack(">5I", fat_arch_data)
+            
+            # Extract architecture name
+            arch_name = self._get_arch_name(cputype, cpusubtype)
+            
+            # Extract Mach-O data for this architecture
+            macho_data = self.data[offset:offset + size]
+            
+            # Create MachO instance for this architecture
+            macho_instance = MachO(data=macho_data)
+            macho_instance.file_path = self.file_path  # Set the original file path
+            self.architectures[arch_name] = macho_instance
+    
+    def _get_arch_name(self, cputype, cpusubtype):
+        """Get architecture name from CPU type and subtype."""
+
+        base_name = CPU_TYPE_MAP.get(cputype, f"cpu_{cputype}")
+
+        # Mask off high bits that may be set for certain subtypes
+        clean_subtype = cpusubtype & 0x00FFFFFF
+        
+        # Add subtype info for ARM variants
+        if cputype == CPU_TYPE_ARM64:
+            if clean_subtype == 0:
+                return "arm64"
+            elif clean_subtype == 2:
+                return "arm64e"
+            else:
+                return f"arm64_{clean_subtype}"
+        
+        return base_name
+    
+    def parse(self):
+        """Parse the Mach-O file(s)."""
+        if self.is_fat:
+            for arch_name, macho_instance in self.architectures.items():
+                macho_instance.parse()
+        else:
+            self.macho.parse()
+    
+    def get_architectures(self):
+        """Get list of architectures in this binary."""
+        if self.is_fat:
+            return list(self.architectures.keys())
+        else:
+            # For single arch, just return a simple architecture name for now
+            return ["single_arch"]
+    
+    def get_macho_for_arch(self, arch_name):
+        """Get MachO instance for specific architecture."""
+        if self.is_fat:
+            return self.architectures.get(arch_name)
+        else:
+            # Single arch - return if it matches
+            available_archs = self.get_architectures()
+            if arch_name in available_archs:
+                return self.macho
+            return None
+    
+    # Delegation methods - return data for all architectures or specific arch
+    def get_general_info(self, arch=None):
+        """Get general info. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return macho_instance.get_general_info() if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: macho.get_general_info() 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return self.macho.get_general_info()
+    
+    def get_macho_header(self, arch=None):
+        """Get Mach-O header. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return macho_instance.get_macho_header() if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: macho.get_macho_header() 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return self.macho.get_macho_header()
+    
+    def get_imported_functions(self, arch=None):
+        """Get imported functions. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return macho_instance.get_imported_functions() if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: macho.get_imported_functions() 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return self.macho.get_imported_functions()
+    
+    def get_exported_symbols(self, arch=None):
+        """Get exported symbols. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return macho_instance.get_exported_symbols() if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: macho.get_exported_symbols() 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return self.macho.get_exported_symbols()
+    
+    def get_similarity_hashes(self, arch=None):
+        """Get similarity hashes. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return macho_instance.get_similarity_hashes() if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: macho.get_similarity_hashes() 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return self.macho.get_similarity_hashes()
+    
+    # Attribute delegation for CLI compatibility
+    @property
+    def load_commands(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'load_commands', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'load_commands', None)
+    
+    @property  
+    def load_commands_set(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'load_commands_set', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'load_commands_set', None)
+    
+    @property
+    def segments(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'segments', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'segments', None)
+    
+    @property
+    def dylib_commands(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'dylib_commands', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'dylib_commands', None)
+    
+    @property
+    def dylib_names(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'dylib_names', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'dylib_names', None)
+    
+    @property
+    def uuid(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'uuid', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'uuid', None)
+    
+    @property
+    def entry_point(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'entry_point', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'entry_point', None)
+    
+    @property
+    def version_info(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'version_info', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'version_info', None)
+    
+    @property
+    def code_signature_info(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'code_signature_info', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'code_signature_info', None)
+    
+    @property
+    def imported_functions(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'imported_functions', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'imported_functions', None)
+    
+    @property
+    def exported_symbols(self):
+        if self.is_fat:
+            return {arch_name: getattr(macho_instance, 'exported_symbols', None) 
+                   for arch_name, macho_instance in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'exported_symbols', None)
 
 class MachO:
     """A Mach-O representation.
@@ -491,6 +776,7 @@ class MachO:
             self.data = self.fh.read()
             self.fh.close()
         else:
+            self.file_path = None
             self.data = data
 
         self.f = io.BytesIO(self.data)
@@ -716,7 +1002,8 @@ class MachO:
             cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
             
             # Store load command info
-            load_commands.append({"cmd": LOAD_COMMAND_TYPES[cmd], "cmdsize": cmdsize})
+            cmd_name = LOAD_COMMAND_TYPES.get(cmd, f"UNKNOWN_0x{cmd:x}")
+            load_commands.append({"cmd": cmd_name, "cmdsize": cmdsize})
 
             # Process segments (LC_SEGMENT or LC_SEGMENT_64)
             if (cmd == LOAD_COMMAND_TYPES["LC_SEGMENT"] or 
@@ -1927,15 +2214,30 @@ class MachO:
 # --- CLI Helper Functions ---
 import argparse
 
-def print_dict(d):
+def print_dict(d, indent_level=1):
+    """Print dictionary with proper handling of nested structures."""
+    if indent_level == 1:
+        indent = "\t"
+    else:
+        indlev = "  " * indent_level
+        indent = f"\t{indlev}"
+    
     for k, v in d.items():
-        if isinstance(v, list):
-            print(f"\t{k + ':':<13}")
-            for item in v:
-                print(f"\t\t{item}")
+        if isinstance(v, dict):
+            print(f"{indent}{k}:")
+            print_dict(v, indent_level + 1)
+        elif isinstance(v, list):
+            print(f"{indent}{k}:")
+            for i, item in enumerate(v):
+                if isinstance(item, dict):
+                    if i > 0:  # Add blank line before items after the first
+                        print()
+                    print_dict(item, indent_level + 1)
+                else:
+                    print(f"{indent}\t{item}")
         else:
             if v is not None:
-                print(f"\t{k + ':':<13}{v}")
+                print(f"{indent}{k + ':':<13}{v}")
 
 def print_list(l):
     for i in l:
@@ -2014,119 +2316,207 @@ def main():
     parser.add_argument(
         "-sm", "--similarity", action="store_true", help="Print similarity hashes"
     )
+    parser.add_argument(
+        "--arch", type=str, help="Show info for specific architecture only (for Universal binaries)"
+    )
 
     args = parser.parse_args()
     file_path = args.file
-    filename = os.path.basename(file_path)
 
-    macho = MachO(file_path=file_path)
+    macho = UniversalMachO(file_path=file_path)
     macho.parse()
+    
+    # Handle architecture selection
+    target_arch = args.arch
+    available_archs = macho.get_architectures()
+    
+    if target_arch and target_arch not in available_archs:
+        print(f"Error: Architecture '{target_arch}' not found in binary.")
+        print(f"Available architectures: {', '.join(available_archs)}")
+        return
+    
+    # Show architectures info if FAT binary and no specific arch requested
+    if macho.is_fat and not target_arch:
+        print(f"\n[Universal Binary - Architectures: {', '.join(available_archs)}]")
 
-    if args.all or args.general_info:
-        print("\n[General File Info]")
-        print_dict(macho.general_info)
+    def print_section_for_arch(section_name, data_getter, *args_check):
+        """Print a section for specific arch or all archs."""
+        if not any(args_check):
+            return
+        
+        data = data_getter(target_arch)
+        
+        def print_data(data):
+            """Print data based on its type - generic for all data structures."""
+            if isinstance(data, dict):
+                print_dict(data)
+            elif isinstance(data, list):
+                print_list(data)
+            else:
+                print(f"\t{data}")
 
-    if args.all or args.header:
-        print("\n[Mach-O Header]")
-        print_dict(macho.header)
+        if target_arch:
+            # Single architecture output
+            print(f"\n[{section_name} - {target_arch}]")
+            if data:
+                print_data(data)
+            else:
+                print(f"\tNo {section_name.lower()} found")
+        else:
+            # Multi-architecture output
+            if macho.is_fat:
+                if isinstance(data, dict):
+                    for arch, arch_data in data.items():
+                        print(f"\n[{section_name} - {arch}]")
+                        if arch_data:
+                            print_data(arch_data)
+                        else:
+                            print(f"\tNo {section_name.lower()} found")
+                else:
+                    print(f"\n[{section_name}]")
+                    if data:
+                        print_data(data)
+                    else:
+                        print(f"\tNo {section_name.lower()} found")
+            else:
+                print(f"\n[{section_name}]")
+                if data:
+                    print_data(data)
+                else:
+                    print(f"\tNo {section_name.lower()} found")
+
+    print_section_for_arch("General File Info", macho.get_general_info, args.all, args.general_info)
+    print_section_for_arch("Mach-O Header", macho.get_macho_header, args.all, args.header)
+
+    def get_arch_data(attr_name):
+        """Get attribute data for target architecture or all architectures."""
+        if target_arch:
+            macho_instance = macho.get_macho_for_arch(target_arch)
+            return getattr(macho_instance, attr_name, None) if macho_instance else None
+        else:
+            return getattr(macho, attr_name, None)
 
     if args.all or args.load_cmd_t:
-        print("\n[Load Cmd table]")
-        print_list(macho.load_commands)
-        print("\n[Load Commands]")
-        print_list(sorted(macho.load_commands_set))
-
-    if args.all or args.segments:
-        print("\n[File Segments]")
-        print_list_dict_as_table(macho.segments)
-
-    if args.all or args.dylib:
-        print("\n[Dylib Commands]")
-        if macho.dylib_commands:
-            print_list_dict_as_table(macho.dylib_commands)
-        else:
-            print("\tNo dylib commands found")
-        print("\n[Dylib Names]")
-        if macho.dylib_names:
-            print_list(macho.dylib_names)
-        else:
-            print("\tNo dylib names found")
-
-    if args.all or args.uuid:
-        print("\n[UUID]")
-        if macho.uuid:
-            print(f"\t{macho.uuid}")
-        else:
-            print("\tNo UUID found")
-
-    if args.all or args.entry_point:
-        print("\n[Entry Point]")
-        if macho.entry_point:
-            if macho.entry_point['type'] == 'LC_MAIN':
-                print(f"\tType: LC_MAIN")
-                print(f"\tEntry Point: 0x{macho.entry_point['entryoff']:x}")
-                print(f"\tStack Size: 0x{macho.entry_point['stacksize']:x}")
-            elif macho.entry_point['type'] == 'LC_UNIXTHREAD':
-                print(f"\tType: LC_UNIXTHREAD")
-                print(f"\tEntry Point: 0x{macho.entry_point['entry_address']:x}")
+        load_commands = get_arch_data('load_commands')
+        load_commands_set = get_arch_data('load_commands_set')
+        
+        if target_arch:
+            print(f"\n[Load Cmd table - {target_arch}]")
+            if load_commands:
+                print_list(load_commands)
             else:
-                print(f"\tType: {macho.entry_point['type']}")
+                print("\tNo load commands found")
+            print(f"\n[Load Commands - {target_arch}]") 
+            if load_commands_set:
+                print_list(sorted(load_commands_set))
+            else:
+                print("\tNo load commands found")
         else:
-            print("\tNo entry point found")
-
-    if args.all or args.version:
-        print("\n[Version Information]")
-        if macho.version_info:
-            print(f"\tPlatform: {macho.version_info['platform']}")
-            print(f"\tMinimum Version: {macho.version_info['min_version']}")
-            print(f"\tSDK Version: {macho.version_info['sdk_version']}")
-        else:
-            print("\tNo version information found")
-
-    if args.all or args.code_signature:
-        print("\n[Code Signature]")
-        if macho.code_signature_info['signed']:
-            print(f"\tSigning Status: {macho.code_signature_info['signing_status']}")
-            
-            if macho.code_signature_info['certificates_info']:
-                print(f"\tCertificates: {macho.code_signature_info['certificates_info']['count']}")
-                for i, cert in enumerate(macho.code_signature_info['certificates_info']['certificates']):
-                    print(f"\t  Certificate {i+1}: {cert.get('subject', 'Unknown')}")
-            
-            if macho.code_signature_info['entitlements_info']['count'] > 0:
-                print(f"\tEntitlements: {macho.code_signature_info['entitlements_info']['count']}")
-                for key, entitlement in macho.code_signature_info['entitlements_info']['entitlements'].items():
-                    if entitlement['type'] == 'array':
-                        print(f"\t  {key}:")
-                        for item in entitlement['value']:
-                            print(f"\t\t{item}")
+            if macho.is_fat and isinstance(load_commands, dict):
+                for arch in available_archs:
+                    arch_load_commands = load_commands.get(arch, [])
+                    arch_load_commands_set = load_commands_set.get(arch, set())
+                    print(f"\n[Load Cmd table - {arch}]")
+                    if arch_load_commands:
+                        print_list(arch_load_commands)
                     else:
-                        print(f"\t  {key}: {entitlement['value']}")
-            
-            if macho.code_signature_info['code_directory']:
-                cd = macho.code_signature_info['code_directory']
-                print(f"\tCode Directory Version: {cd.get('version', 'Unknown')}")
-                print(f"\tSigning Flags: {', '.join(cd.get('signing_flags', []))}")
-        else:
-            print("\tNot signed")
+                        print("\tNo load commands found")
+                    print(f"\n[Load Commands - {arch}]")
+                    if arch_load_commands_set:
+                        print_list(sorted(arch_load_commands_set))
+                    else:
+                        print("\tNo load commands found")
+            else:
+                print("\n[Load Cmd table]")
+                if load_commands:
+                    print_list(load_commands)
+                else:
+                    print("\tNo load commands found")
+                print("\n[Load Commands]")
+                if load_commands_set:
+                    print_list(sorted(load_commands_set))
+                else:
+                    print("\tNo load commands found")
 
-    if args.all or args.imports:
-        print("\n[Imported Functions]")
-        if macho.imported_functions:
-            print_dict(macho.imported_functions)
-        else:
-            print("\tNo imported functions found")
 
-    if args.all or args.exports:
-        print("\n[Exported Symbols]")
-        if macho.exported_symbols:
-            print_dict(macho.exported_symbols)
+    # Segments - table formatting
+    if args.all or args.segments:
+        segments = get_arch_data('segments')
+        
+        if target_arch:
+            print(f"\n[File Segments - {target_arch}]")
+            if segments:
+                print_list_dict_as_table(segments)
+            else:
+                print("\tNo segments found")
+        elif macho.is_fat and isinstance(segments, dict):
+            for arch in available_archs:
+                arch_segments = segments.get(arch)
+                print(f"\n[File Segments - {arch}]")
+                if arch_segments:
+                    print_list_dict_as_table(arch_segments)
+                else:
+                    print("\tNo segments found")
         else:
-            print("\tNo exported symbols found")
+            print("\n[File Segments]")
+            if segments:
+                print_list_dict_as_table(segments)
+            else:
+                print("\tNo segments found")
 
-    if args.all or args.similarity:
-        print("\n[Similarity Hashes]")
-        print_dict(macho.get_similarity_hashes())
+    # Dylib sections - both commands and names with table formatting
+    if args.all or args.dylib:
+        commands_data = get_arch_data('dylib_commands')
+        names_data = get_arch_data('dylib_names')
+        
+        if target_arch:
+            # Single architecture
+            print(f"\n[Dylib Commands - {target_arch}]")
+            if commands_data:
+                print_list_dict_as_table(commands_data)
+            else:
+                print("\tNo dylib commands found")
+            print(f"\n[Dylib Names - {target_arch}]")
+            if names_data:
+                print_list(names_data)
+            else:
+                print("\tNo dylib names found")
+        elif macho.is_fat and isinstance(commands_data, dict):
+            # Multi-architecture FAT binary
+            for arch in available_archs:
+                print(f"\n[Dylib Commands - {arch}]")
+                arch_commands = commands_data.get(arch)
+                if arch_commands:
+                    print_list_dict_as_table(arch_commands)
+                else:
+                    print("\tNo dylib commands found")
+                print(f"\n[Dylib Names - {arch}]")
+                arch_names = names_data.get(arch)
+                if arch_names:
+                    print_list(arch_names)
+                else:
+                    print("\tNo dylib names found")
+        else:
+            # Single architecture binary
+            print("\n[Dylib Commands]")
+            if commands_data:
+                print_list_dict_as_table(commands_data)
+            else:
+                print("\tNo dylib commands found")
+            print("\n[Dylib Names]")
+            if names_data:
+                print_list(names_data)
+            else:
+                print("\tNo dylib names found")
+
+    print_section_for_arch("UUID", lambda arch: get_arch_data('uuid'), args.all, args.uuid)
+    print_section_for_arch("Entry Point", lambda arch: get_arch_data('entry_point'), args.all, args.entry_point)
+    print_section_for_arch("Version Information", lambda arch: get_arch_data('version_info'), args.all, args.version)
+    print_section_for_arch("Code Signature", lambda arch: get_arch_data('code_signature_info'), args.all, args.code_signature)
+
+    print_section_for_arch("Imported Functions", macho.get_imported_functions, args.all, args.imports)
+    print_section_for_arch("Exported Symbols", macho.get_exported_symbols, args.all, args.exports)
+    print_section_for_arch("Similarity Hashes", macho.get_similarity_hashes, args.all, args.similarity)
 
 if __name__ == "__main__":
     main()

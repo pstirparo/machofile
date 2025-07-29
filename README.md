@@ -11,7 +11,7 @@ While there are other mach-o parsing modules out there, the motivations behind d
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is the very first/alpha version still (2023.11.04), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
+This is still a beta (2025.07.28), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
 
 **Current Features:**
 - Parse Mach-O Header
@@ -26,12 +26,13 @@ This is the very first/alpha version still (2023.11.04), so please let me know i
 - Extract Entry point
 - Extract UUID
 - Extract Version Information
+- Parse Code Signature information
+- Support for FAT (Universal) Binaries
 
-_Note: as of now, this has initially been tested against x86 and x86_64 Mach-O samples._
+
+_Note: as of now, this has initially been tested against x86, x86_64, arm64, and arm64e Mach-O samples._
 
 **Next features to be implemented (in random order):**
-- Parse Code Signature information
-- support for FAT Binaries
 - Embedded strings
 - File Attributes
 - flag for suspicious libraries
@@ -79,13 +80,14 @@ You can now use `machofile.py` directly as a CLI tool. All CLI features are avai
 
 ```
 % python3 machofile.py -h
-usage: machofile.py [-h] -f FILE [-a] [-i] [-hd] [-l] [-sg] [-d] [-sm]
+usage: machofile.py [-h] -f FILE [--arch ARCH] [-a] [-i] [-hd] [-l] [-sg] [-d] [-sm]
 
 Parse Mach-O file structures.
 
 options:
   -h, --help            show this help message and exit
   -f FILE, --file FILE  Path to the file to be parsed
+  --arch ARCH           Architecture to parse (for FAT binaries). If not specified, all architectures are parsed
   -a, --all             Print all info about the file
   -i, --info            Print general info about the file
   -hd, --header         Print Mach-O header info
@@ -217,6 +219,7 @@ Example output:
 ## Reference/Documentation links:
 - https://opensource.apple.com/source/xnu/xnu-2050.18.24/EXTERNAL_HEADERS/mach-o/loader.h
 - https://github.com/apple-oss-distributions/lldb/blob/10de1840defe0dff10b42b9c56971dbc17c1f18c/llvm/include/llvm/Support/MachO.h
+- https://github.com/apple-oss-distributions/dyld/tree/main
 - https://iphonedev.wiki/Mach-O_File_Format
 - https://lowlevelbits.org/parsing-mach-o-files/
 - https://github.com/aidansteele/osx-abi-macho-file-format-reference
@@ -224,3 +227,4 @@ Example output:
 - https://github.com/VirusTotal/yara/blob/master/libyara/include/yara/macho.h
 - https://github.com/corkami/pics/blob/master/binary/README.md
 - https://github.com/qyang-nj/llios/tree/main
+- https://github.com/threatstream/symhash
