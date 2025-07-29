@@ -44,12 +44,12 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 #     uint32_t    cmdsize;
 #     struct segment_command { // for 32-bit architectures
 #         char        segname[16];
-#         uint32_t    vmaddr;
-#         uint32_t    vmsize;
-#         uint32_t    fileoff;
-#         uint32_t    filesize;
-#         vm_prot_t   maxprot;
-#         vm_prot_t   initprot;
+#         uint32_t    vmaddr; // uint32_t for 32-bit architectures, uint64_t for 64-bit architectures
+#         uint32_t    vmsize; // uint32_t for 32-bit architectures, uint64_t for 64-bit architectures
+#         uint32_t    fileoff; // uint32_t for 32-bit architectures, uint64_t for 64-bit architectures
+#         uint32_t    filesize; // uint32_t for 32-bit architectures, uint64_t for 64-bit architectures
+#         uint32_t    maxprot;
+#         uint32_t    initprot;
 #         uint32_t    nsects;
 #         uint32_t    flags;
 #     } segment_command;
@@ -1086,14 +1086,14 @@ class MachO:
                 segname = segname.decode("utf-8").rstrip("\0")
                 segment_dict = {
                     "segname": segname,
-                    "vaddr": vaddr,
-                    "vsize": vsize,
-                    "offset": offset,
-                    "size": size,
-                    "max_vm_protection": max_vm_protection,
-                    "initial_vm_protection": initial_vm_protection,
-                    "nsects": nsectors,
-                    "flags": flags,
+                    "vaddr": vaddr & 0xFFFFFFFFFFFFFFFF if is_64_bit else vaddr & 0xFFFFFFFF,  # Virtual address - ensure unsigned
+                    "vsize": vsize & 0xFFFFFFFFFFFFFFFF if is_64_bit else vsize & 0xFFFFFFFF,  # Virtual size - ensure unsigned
+                    "offset": offset & 0xFFFFFFFFFFFFFFFF if is_64_bit else offset & 0xFFFFFFFF, # File offset - ensure unsigned
+                    "size": size & 0xFFFFFFFFFFFFFFFF if is_64_bit else size & 0xFFFFFFFF,     # File size - ensure unsigned
+                    "max_vm_protection": max_vm_protection & 0xFFFFFFFF,    # vm_prot_t - protection flags, ensure unsigned
+                    "initial_vm_protection": initial_vm_protection & 0xFFFFFFFF, # vm_prot_t - protection flags, ensure unsigned
+                    "nsects": nsectors,                                     # uint32_t - section count, small positive value
+                    "flags": flags & 0xFFFFFFFF,                           # uint32_t - segment flags bitmask, must be unsigned
                     "entropy": self._calculate_segment_entropy(offset, size),
                 }
                 segments.append(segment_dict)
@@ -1117,10 +1117,10 @@ class MachO:
                 dylib_name = self.f.read(dylib_name_size).rstrip(b"\x00")
                 
                 dylib_dict = {
-                    "dylib_name_offset": dylib_name_offset,
-                    "dylib_timestamp": dylib_timestamp,
-                    "dylib_current_version": dylib_current_version,
-                    "dylib_compat_version": dylib_compat_version,
+                    "dylib_name_offset": dylib_name_offset & 0xFFFFFFFF,    # uint32_t - name offset, ensure unsigned
+                    "dylib_timestamp": dylib_timestamp & 0xFFFFFFFF,        # uint32_t - timestamp, ensure unsigned
+                    "dylib_current_version": dylib_current_version & 0xFFFFFFFF, # uint32_t - version number, ensure unsigned
+                    "dylib_compat_version": dylib_compat_version & 0xFFFFFFFF,   # uint32_t - compatibility version, ensure unsigned
                     "dylib_name": dylib_name,
                 }
                 dylib_commands.append(dylib_dict)
@@ -1183,8 +1183,8 @@ class MachO:
                 
                 entry_point = {
                     'type': 'LC_MAIN',
-                    'entryoff': entryoff,
-                    'stacksize': stacksize
+                    'entryoff': entryoff & 0xFFFFFFFFFFFFFFFF,  # uint64_t - entry offset, ensure unsigned
+                    'stacksize': stacksize & 0xFFFFFFFFFFFFFFFF # uint64_t - stack size, ensure unsigned
                 }
 
             # Process LC_UNIXTHREAD (alternative entry point for older samples)
@@ -1231,8 +1231,8 @@ class MachO:
                 
                 entry_point = {
                     'type': 'LC_UNIXTHREAD',
-                    'entry_address': entry_address,
-                    'thread_data_size': thread_data_size,
+                    'entry_address': entry_address & 0xFFFFFFFFFFFFFFFF if entry_address else None, # uint64_t - entry address, ensure unsigned
+                    'thread_data_size': thread_data_size & 0xFFFFFFFF,  # uint32_t - thread data size, ensure unsigned
                 }
 
             # Process LC_VERSION_MIN_MACOSX and similar version commands
@@ -1247,9 +1247,9 @@ class MachO:
                 version, sdk = struct.unpack(version_fmt, version_data)
                 
                 version_info = {
-                    'platform_cmd': cmd,
-                    'min_version': version,
-                    'sdk_version': sdk
+                    'platform_cmd': cmd & 0xFFFFFFFF,       # uint32_t - platform command, ensure unsigned
+                    'min_version': version & 0xFFFFFFFF,    # uint32_t - minimum version, ensure unsigned
+                    'sdk_version': sdk & 0xFFFFFFFF         # uint32_t - SDK version, ensure unsigned
                 }
             
             elif cmd == LOAD_COMMAND_TYPES["LC_CODE_SIGNATURE"]:
