@@ -408,22 +408,63 @@ N_SECT = 0xE   # Section symbol
 N_PBUD = 0xC   # Prebound undefined symbol
 N_INDR = 0xA   # Indirect symbol
 
-# Code signature magic constants
-CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
-CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171
-CSMAGIC_BLOBWRAPPER = 0xFADE0B01
-CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+# Code signature magic constants (from XNU cs_blobs.h)
+# https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/osfmk/kern/cs_blobs.h#L89
+CSMAGIC_REQUIREMENT = 0xFADE0C00                # single Requirement blob
+CSMAGIC_REQUIREMENTS = 0xFADE0C01               # Requirements vector (internal requirements)
+CSMAGIC_CODEDIRECTORY = 0xFADE0C02              # CodeDirectory blob
+CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0         # embedded form of signature data
+CSMAGIC_EMBEDDED_SIGNATURE_OLD = 0xFADE0B02     # legacy embedded signature format
+CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171      # embedded entitlements (XML)
+CSMAGIC_EMBEDDED_DER_ENTITLEMENTS = 0xFADE7172  # embedded DER encoded entitlements
+CSMAGIC_DETACHED_SIGNATURE = 0xFADE0CC1         # multi-arch collection of embedded signatures
+CSMAGIC_BLOBWRAPPER = 0xFADE0B01                # CMS Signature, among other things
+CSMAGIC_EMBEDDED_LAUNCH_CONSTRAINT = 0xFADE8181 # lightweight code requirement
 
 # Code signature slot types
-CSSLOT_CODEDIRECTORY = 0
-CSSLOT_INFOSLOT = 1
-CSSLOT_REQUIREMENTS = 2
-CSSLOT_RESOURCEDIR = 3
-CSSLOT_APPLICATION = 4
-CSSLOT_ENTITLEMENTS = 5
-CSSLOT_DER_ENTITLEMENTS = 7
-CSSLOT_SIGNATURESLOT = 0x10000
-# Certificates start at CSSLOT_SIGNATURESLOT + index
+CSSLOT_CODEDIRECTORY = 0                        # slot index for CodeDirectory
+CSSLOT_INFOSLOT = 1                             # slot index for Info.plist
+CSSLOT_REQUIREMENTS = 2                         # slot index for internal requirements
+CSSLOT_RESOURCEDIR = 3                          # slot index for resource directory
+CSSLOT_APPLICATION = 4                          # slot index for application specific
+CSSLOT_ENTITLEMENTS = 5                         # slot index for embedded entitlements
+CSSLOT_DER_ENTITLEMENTS = 7                     # slot index for DER encoded entitlements
+CSSLOT_LAUNCH_CONSTRAINT_SELF = 8               # slot index for launch constraints (self)
+CSSLOT_LAUNCH_CONSTRAINT_PARENT = 9             # slot index for launch constraints (parent)
+CSSLOT_LAUNCH_CONSTRAINT_RESPONSIBLE = 10       # slot index for launch constraints (responsible)
+CSSLOT_LIBRARY_CONSTRAINT = 11                  # slot index for library constraints
+
+# Alternate code directories
+CSSLOT_ALTERNATE_CODEDIRECTORIES = 0x1000       # first alternate CodeDirectory, if any
+CSSLOT_ALTERNATE_CODEDIRECTORY_MAX = 5          # max number of alternate CD slots
+CSSLOT_ALTERNATE_CODEDIRECTORY_LIMIT = CSSLOT_ALTERNATE_CODEDIRECTORIES + CSSLOT_ALTERNATE_CODEDIRECTORY_MAX
+
+# Signature slots
+CSSLOT_SIGNATURESLOT = 0x10000                  # CMS Signature (certificates start here)
+CSSLOT_IDENTIFICATIONSLOT = 0x10001             # identification blob
+CSSLOT_TICKETSLOT = 0x10002                     # ticket slot
+
+# Code signature hash algorithms
+CS_HASHTYPE_SHA1 = 1                            # SHA-1 hash algorithm
+CS_HASHTYPE_SHA256 = 2                          # SHA-256 hash algorithm  
+CS_HASHTYPE_SHA256_TRUNCATED = 3                # SHA-256 truncated to 160 bits
+CS_HASHTYPE_SHA384 = 4                          # SHA-384 hash algorithm
+
+# Hash lengths
+CS_SHA1_LEN = 20                                # SHA-1 hash length
+CS_SHA256_LEN = 32                              # SHA-256 hash length
+CS_SHA256_TRUNCATED_LEN = 20                    # SHA-256 truncated length
+CS_SHA384_LEN = 48                              # SHA-384 hash length
+CS_CDHASH_LEN = 20                              # CD hash length (always 160 bits)
+CS_HASH_MAX_SIZE = 48                           # maximum supported hash size
+
+# Code signature support flags
+CS_SUPPORTSSCATTER = 0x20100                   # supports scatter/gather
+CS_SUPPORTSTEAMID = 0x20200                    # supports team IDs
+CS_SUPPORTSCODELIMIT64 = 0x20300               # supports 64-bit code limits
+CS_SUPPORTSEXECSEG = 0x20400                   # supports exec segment base/size
+CS_SUPPORTSRUNTIME = 0x20500                   # supports runtime version
+CS_SUPPORTSLINKAGE = 0x20600                   # supports linkage signature
 
 # Mach-O dynamic linker constant
 LC_REQ_DYLD = 0x80000000
@@ -1409,6 +1450,10 @@ class MachO:
             if magic != CSMAGIC_EMBEDDED_SIGNATURE:
                 return self._empty_signature_result()
             
+            # Validate superblob structure
+            if length > len(signature_data) or count > 100:  # Reasonable upper limit
+                return self._empty_signature_result()
+            
             # Parse blob index entries
             blobs = []
             offset = 12
@@ -1436,6 +1481,10 @@ class MachO:
                     blob_magic, blob_length = struct.unpack(">II", 
                                                             signature_data[blob_offset:blob_offset + 8])
                     
+                    # Validate blob length to prevent issues with malformed data
+                    if blob_length > len(signature_data) or blob_length < 8:
+                        continue
+                    
                     # Check for certificate slots (certificates start at CSSLOT_SIGNATURESLOT)
                     if blob_type >= CSSLOT_SIGNATURESLOT:
                         # This is a certificate blob
@@ -1449,8 +1498,33 @@ class MachO:
                     elif blob_type == CSSLOT_ENTITLEMENTS and blob_magic == CSMAGIC_EMBEDDED_ENTITLEMENTS:
                         entitlements = self._parse_entitlements_blob(signature_data, blob_offset, blob_length)
                     
+                    elif blob_type == CSSLOT_DER_ENTITLEMENTS and blob_magic == CSMAGIC_EMBEDDED_DER_ENTITLEMENTS:
+                        # Only parse DER entitlements if we haven't found XML entitlements
+                        if entitlements['count'] == 0:
+                            entitlements = self._parse_der_entitlements_blob(signature_data, blob_offset, blob_length)
+                    
                     elif blob_type == CSSLOT_CODEDIRECTORY and blob_magic == CSMAGIC_CODEDIRECTORY:
                         code_directory = self._parse_code_directory_blob(signature_data, blob_offset, blob_length)
+                    
+                    # Parse alternate code directories (slots 0x1000+)
+                    elif (blob_type >= CSSLOT_ALTERNATE_CODEDIRECTORIES and 
+                          blob_type < CSSLOT_ALTERNATE_CODEDIRECTORY_LIMIT and 
+                          blob_magic == CSMAGIC_CODEDIRECTORY):
+                        alt_cd = self._parse_code_directory_blob(signature_data, blob_offset, blob_length)
+                        if alt_cd:
+                            alt_cd['slot_index'] = blob_type - CSSLOT_ALTERNATE_CODEDIRECTORIES
+                            if 'alternate_code_directories' not in locals():
+                                alternate_code_directories = []
+                            alternate_code_directories.append(alt_cd)
+                    
+                    # Parse launch constraint blobs (slots 8-11)
+                    elif blob_type in [CSSLOT_LAUNCH_CONSTRAINT_SELF, CSSLOT_LAUNCH_CONSTRAINT_PARENT, 
+                                     CSSLOT_LAUNCH_CONSTRAINT_RESPONSIBLE, CSSLOT_LIBRARY_CONSTRAINT]:
+                        if blob_magic == CSMAGIC_EMBEDDED_LAUNCH_CONSTRAINT:
+                            constraint_info = self._parse_launch_constraint_blob(signature_data, blob_offset, blob_length, blob_type)
+                            if 'launch_constraints' not in locals():
+                                launch_constraints = []
+                            launch_constraints.append(constraint_info)
             
             # Update certificate count
             certificates['count'] = len(certificates['certificates'])
@@ -1458,13 +1532,29 @@ class MachO:
             # Determine signing status
             signing_status = self._determine_signing_status(certificates, code_directory)
             
-            return {
+            result = {
                 'signed': certificates['count'] > 0 or code_directory is not None,
                 'signing_status': signing_status,
                 'certificates_info': certificates,
                 'entitlements_info': entitlements,
                 'code_directory': code_directory
             }
+            
+            # Add launch constraints if any were found
+            if 'launch_constraints' in locals():
+                result['launch_constraints'] = {
+                    'count': len(launch_constraints),
+                    'constraints': launch_constraints
+                }
+            
+            # Add alternate code directories if any were found
+            if 'alternate_code_directories' in locals():
+                result['alternate_code_directories'] = {
+                    'count': len(alternate_code_directories),
+                    'directories': alternate_code_directories
+                }
+            
+            return result
             
         except (struct.error, IOError, UnicodeDecodeError) as e:
             return self._empty_signature_result()
@@ -1538,6 +1628,104 @@ class MachO:
                     
         except (UnicodeDecodeError, AttributeError):
             return {'count': 0, 'entitlements': {}}
+
+    def _parse_der_entitlements_blob(self, signature_data, offset, length):
+        """Parse DER encoded entitlements from embedded DER entitlements blob.
+        
+        DER (Distinguished Encoding Rules) is a binary encoding format for ASN.1.
+        Because this module is self-contained without external dependencies,
+        only basic parsing to extract readable information is possible atm.
+        """
+        try:
+            # Skip blob header (8 bytes) to get to DER data
+            der_start = offset + 8
+            der_end = offset + length
+            
+            if der_end > len(signature_data):
+                return {'count': 0, 'entitlements': {}}
+                
+            der_data = signature_data[der_start:der_end]
+            
+            # DER parsing without ASN.1 libraries is complex,
+            # we try to extract any readable strings that might be entitlement keys
+            entitlements = {}
+            
+            # Convert to string and look for common entitlement patterns
+            der_string = der_data.decode('utf-8', errors='ignore')
+            
+            # Common entitlement key patterns to look for
+            entitlement_patterns = [
+                'com.apple.developer.',
+                'com.apple.security.',
+                'application-identifier',
+                'team-identifier',
+                'get-task-allow',
+                'platform-application',
+                'com.apple.private.',
+                'keychain-access-groups'
+            ]
+            
+            for pattern in entitlement_patterns:
+                if pattern in der_string:
+                    # Extract the entitlement key - this is a simplified approach
+                    entitlements[pattern] = {
+                        'type': 'detected',
+                        'value': 'Present (DER encoded)'
+                    }
+            
+            return {
+                'count': len(entitlements),
+                'entitlements': entitlements,
+                'format': 'DER',
+                'note': 'DER entitlements detected but not fully parsed'
+            }
+                    
+        except (UnicodeDecodeError, AttributeError):
+            return {'count': 0, 'entitlements': {}, 'format': 'DER'}
+
+    def _parse_launch_constraint_blob(self, signature_data, offset, length, slot_type):
+        """Parse launch constraint blob.
+        
+        Launch constraints are lightweight code requirements introduced in newer iOS versions.
+        They provide additional security restrictions on process launches.
+        """
+        try:
+            # Skip blob header (8 bytes) to get to constraint data
+            constraint_start = offset + 8
+            constraint_end = offset + length
+            
+            if constraint_end > len(signature_data):
+                return None
+                
+            constraint_data = signature_data[constraint_start:constraint_end]
+            
+            # Map slot types to readable names
+            slot_names = {
+                CSSLOT_LAUNCH_CONSTRAINT_SELF: 'self',
+                CSSLOT_LAUNCH_CONSTRAINT_PARENT: 'parent', 
+                CSSLOT_LAUNCH_CONSTRAINT_RESPONSIBLE: 'responsible',
+                CSSLOT_LIBRARY_CONSTRAINT: 'library'
+            }
+            
+            constraint_info = {
+                'slot': slot_type,
+                'slot_name': slot_names.get(slot_type, f'unknown_{slot_type}'),
+                'size': len(constraint_data),
+                'data_present': True
+            }
+            
+            # Try to extract any readable strings from the constraint data
+            try:
+                constraint_string = constraint_data.decode('utf-8', errors='ignore')
+                if constraint_string.strip():
+                    constraint_info['readable_content'] = constraint_string.strip()
+            except UnicodeDecodeError:
+                pass
+            
+            return constraint_info
+            
+        except (struct.error, IndexError):
+            return None
 
     def _parse_certificate_blob(self, signature_data, offset, length, cert_index=0):
         """Parse certificate information from blobwrapper.
@@ -1730,7 +1918,7 @@ class MachO:
             return None
 
     def _parse_code_directory_blob(self, signature_data, offset, length):
-        """Parse code directory information."""
+        """Parse code directory information with enhanced parsing for newer versions."""
         try:
             # Skip blob header (8 bytes) and parse code directory structure
             cd_start = offset + 8
@@ -1750,6 +1938,39 @@ class MachO:
                 'special_slots': n_special_slots,
                 'signing_flags': self._decode_signing_flags(flags)
             }
+            
+            # Parse additional fields based on version and available data
+            current_offset = cd_start + 20
+            
+            # Parse hash algorithm and other fields if we have enough data
+            if current_offset + 12 <= cd_start + length:
+                n_code_slots, hash_size, hash_type = struct.unpack(">III", 
+                                                                  signature_data[current_offset:current_offset + 12])
+                code_directory.update({
+                    'code_slots': n_code_slots,
+                    'hash_size': hash_size, 
+                    'hash_type': hash_type,
+                    'hash_algorithm': self._decode_hash_algorithm(hash_type)
+                })
+                current_offset += 12
+                
+                # Parse spare fields (version >= 20100)
+                if version >= 20100 and current_offset + 12 <= cd_start + length:
+                    spare1, spare2, spare3 = struct.unpack(">III", 
+                                                           signature_data[current_offset:current_offset + 12])
+                    current_offset += 12
+                    
+                    # Parse Team ID (version >= 20200)
+                    if version >= 20200 and current_offset + 4 <= cd_start + length:
+                        team_offset = struct.unpack(">I", signature_data[current_offset:current_offset + 4])[0]
+                        current_offset += 4
+                        
+                        if team_offset > 0 and cd_start + team_offset < len(signature_data):
+                            team_start = cd_start + team_offset
+                            team_end = signature_data.find(b'\x00', team_start)
+                            if team_end > team_start:
+                                team_id = signature_data[team_start:team_end].decode('utf-8', errors='ignore')
+                                code_directory['team_id'] = team_id
             
             # Try to extract identifier string if possible
             if ident_offset > 0 and cd_start + ident_offset < len(signature_data):
@@ -1789,6 +2010,17 @@ class MachO:
                 active_flags.append(flag_name)
         
         return active_flags if active_flags else ['None']
+
+    def _decode_hash_algorithm(self, hash_type):
+        """Decode hash algorithm type to human-readable format."""
+        hash_algorithms = {
+            CS_HASHTYPE_SHA1: 'SHA-1',
+            CS_HASHTYPE_SHA256: 'SHA-256',
+            CS_HASHTYPE_SHA256_TRUNCATED: 'SHA-256 (truncated)',
+            CS_HASHTYPE_SHA384: 'SHA-384'
+        }
+        
+        return hash_algorithms.get(hash_type, f'Unknown ({hash_type})')
 
     def _determine_signing_status(self, certificates, code_directory):
         """Determine the overall signing status of the binary."""
