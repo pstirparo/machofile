@@ -1,5 +1,5 @@
 # machofile
-machofile is a module to parse Mach-O binary files
+machofile is a module to parse Mach-O binary files, with a focus on malware analysis and reverse engineering.
 
 Inspired by Ero Carrera's pefile, this module aims to provide a similar capability but for Mach-O binaries instead. 
 Reference material and documentation used to gain the file format knowledge, the basic structures and constant are taken from the resources listed below.
