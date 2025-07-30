@@ -2540,7 +2540,7 @@ def collect_all_data(macho, args, target_arch=None, raw=True):
                 data['version_info'] = raw_version_info
     
     # Code signature
-    if args.all or args.code_signature:
+    if args.all or args.signature:
         data['code_signature_info'] = get_arch_data('code_signature_info')
     
     # Imports
@@ -2619,63 +2619,75 @@ def print_list_dict_as_table(dict_list):
 # --- CLI Main Entrypoint ---
 def main():
     parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
-    parser.add_argument(
+    
+    # Required arguments
+    required = parser.add_argument_group('required arguments')
+    required.add_argument(
         "-f", "--file", type=str, help="Path to the file to be parsed", required=True
     )
-    parser.add_argument(
+    
+    # Output format options
+    output_group = parser.add_argument_group('output format options')
+    output_group.add_argument(
+        "-j", "--json", action="store_true", help="Output data in JSON format"
+    )
+    output_group.add_argument(
+        "--raw", action="store_true", help="Output raw values in JSON format (use with -j/--json)"
+    )
+    
+    # Data extraction options (alphabetical)
+    data_group = parser.add_argument_group('data extraction options')
+    data_group.add_argument(
         "-a", "--all", action="store_true", help="Print all info about the file"
     )
-    parser.add_argument(
-        "-g", "--general_info", action="store_true", help="Print general info about the file"
-    )
-    parser.add_argument(
-        "-hd", "--header", action="store_true", help="Print Mach-O header info"
-    )
-    parser.add_argument(
-        "-l",
-        "--load_cmd_t",
-        action="store_true",
-        help="Print Load Command Table and Command list",
-    )
-    parser.add_argument(
-        "-sg", "--segments", action="store_true", help="Print File Segments info"
-    )
-    parser.add_argument(
+    data_group.add_argument(
         "-d",
         "--dylib",
         action="store_true",
         help="Print Dylib Command Table and Dylib list",
     )
-    parser.add_argument(
-        "-u", "--uuid", action="store_true", help="Print UUID"
-    )
-    parser.add_argument(
-        "-ep", "--entry_point", action="store_true", help="Print entry point information"
-    )
-    parser.add_argument(
-        "-v", "--version", action="store_true", help="Print version information"
-    )
-    parser.add_argument(
-        "-cs", "--code_signature", action="store_true", 
-        help="Print code signature and entitlements information"
-    )
-    parser.add_argument(
-        "-i", "--imports", action="store_true", help="Print imported symbols"
-    )
-    parser.add_argument(
+    data_group.add_argument(
         "-e", "--exports", action="store_true", help="Print exported symbols"
     )
-    parser.add_argument(
-        "-sm", "--similarity", action="store_true", help="Print similarity hashes"
+    data_group.add_argument(
+        "-ep", "--entry-point", dest="entry_point", action="store_true", help="Print entry point information"
     )
-    parser.add_argument(
+    data_group.add_argument(
+        "-g", "--general_info", action="store_true", help="Print general info about the file"
+    )
+    data_group.add_argument(
+        "-hdr", "--header", action="store_true", help="Print Mach-O header info"
+    )
+    data_group.add_argument(
+        "-i", "--imports", action="store_true", help="Print imported symbols"
+    )
+    data_group.add_argument(
+        "-l",
+        "--load_cmd_t",
+        action="store_true",
+        help="Print Load Command Table and Command list",
+    )
+    data_group.add_argument(
+        "-seg", "--segments", action="store_true", help="Print File Segments info"
+    )
+    data_group.add_argument(
+        "-sig", "--signature", action="store_true", 
+        help="Print code signature and entitlements information"
+    )
+    data_group.add_argument(
+        "-sim", "--similarity", action="store_true", help="Print similarity hashes"
+    )
+    data_group.add_argument(
+        "-u", "--uuid", action="store_true", help="Print UUID"
+    )
+    data_group.add_argument(
+        "-v", "--version", action="store_true", help="Print version information"
+    )
+    
+    # Filter options
+    filter_group = parser.add_argument_group('filter options')
+    filter_group.add_argument(
         "--arch", type=str, help="Show info for specific architecture only (for Universal binaries)"
-    )
-    parser.add_argument(
-        "-j", "--json", action="store_true", help="Output data in JSON format"
-    )
-    parser.add_argument(
-        "--raw", action="store_true", help="Output raw values in JSON format (use with -j/--json)"
     )
 
     args = parser.parse_args()
@@ -3004,7 +3016,7 @@ def main():
             return raw_version_info
     
     print_section_for_arch("Version Information", get_formatted_version_info, args.all, args.version)
-    print_section_for_arch("Code Signature", lambda arch: get_arch_data('code_signature_info'), args.all, args.code_signature)
+    print_section_for_arch("Code Signature", lambda arch: get_arch_data('code_signature_info'), args.all, args.signature)
 
     print_section_for_arch("Imported Functions", macho.get_imported_functions, args.all, args.imports)
     print_section_for_arch("Exported Symbols", macho.get_exported_symbols, args.all, args.exports)
