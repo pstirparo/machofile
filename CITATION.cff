@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "machofile: A Python module to parse Mach-O binary files"
+message: "If you use this software, please cite it as below."
+authors:
+  - given-names: "Pasquale"
+    family-names: "Stirparo"
+    email: "pstirparo@threatresearch.ch"
+    orcid: "https://orcid.org/0009-0009-4324-122X"
+abstract: "machofile is a self-contained Python module for parsing Mach-O binary files, with a focus on malware analysis and reverse engineering."
+keywords:
+  - "mach-o"
+  - "macho"
+  - "universal-binary"
+  - "binary-parser"
+  - "macos"
+  - "ios"
+  - "reverse-engineering"
+  - "malware-analysis"
+  - "security"
+  - "python"
+repository-code: "https://github.com/pasquales/machofile"
+url: "https://github.com/pasquales/machofile"
+license: "MIT"
+version: "2025.07.30"
+date-released: 2025-07-30
+repository-artifact: "https://pypi.org/project/machofile/" 

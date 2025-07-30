@@ -6,7 +6,8 @@ The Mach-O file format is the executable file format used
 by macOS, iOS, watchOS, and tvOS.
 
 Inspired by pefile, this module aims to provide a similar 
-capability but for Mach-O binaries instead. The basic structures 
+capability but for Mach-O binaries instead, with a focus on 
+malware analysis and reverse engineering. The basic structures 
 and constant are taken from the Mach-O header file (loader.h) 
 from the xnu kernel source code. Reference material and documentation 
 used to gain the file format knowledge are listed below.

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machofile"
+version = "2025.07.30"
+description = "A Python module to parse Mach-O binary files"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Pasquale Stirparo", email = "pstirparo@threatresearch.ch"}
+]
+maintainers = [
+    {name = "Pasquale Stirparo", email = "pstirparo@threatresearch.ch"}
+]
+keywords = ["mach-o", "macho", "universal-binary", "binary-parser", "macos", "ios", "reverse-engineering", "malware-analysis", "security", "python"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Operating System",
+    "Topic :: Utilities",
+]
+requires-python = ">=3.7"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/pasquales/machofile"
+Repository = "https://github.com/pasquales/machofile"
+Documentation = "https://github.com/pasquales/machofile/blob/main/API_documentation_machofile.md"
+"Bug Tracker" = "https://github.com/pasquales/machofile/issues"
+
+[project.scripts]
+machofile = "machofile:main"
+
+[tool.setuptools]
+packages = ["machofile"]
+
+[tool.setuptools.package-data]
+machofile = ["*.md", "LICENSE"]
+
+[tool.setuptools.package-dir]
+machofile = "."
+
+[tool.setuptools.dynamic]
+version = {attr = "machofile.__version__"} 
