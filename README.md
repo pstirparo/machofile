@@ -47,7 +47,10 @@ Those are the people that I would like to thank for being the inspiration that l
 - Greg Lesnewich ([@greglesnewich](https://twitter.com/greglesnewich)) for his work on [macho-similarity](https://github.com/g-les/macho_similarity)
 
 ## Usage and example
-You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
+You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in. You can install it directly via `pip` and use it programmatically or from command line, or use it as standalone script
+```
+pip install machofile
+```
 
 ### Module version
 It expects to be supplied with either a file path or a data buffer to parse.
