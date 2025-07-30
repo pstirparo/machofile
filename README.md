@@ -11,7 +11,7 @@ While there are other mach-o parsing modules out there, the motivations behind d
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is still a beta (2025.07.29), so please let me know if you try or find bugs but also be gentle ;) code will be optimized and more features will be added in the near future.
+This is still officially out of beta (2025.07.30), but still please let me know if you try or find bugs but also... be gentle ;) code will be optimized and more features will be added.
 
 **Current Features:**
 - Parse Mach-O Header
@@ -38,7 +38,6 @@ _Note: as of now, this has initially been tested against x86, x86_64, arm64, and
 - File Attributes
 - flag for suspicious libraries
 - Packer detection
-- prettify output to console
 - ...
 
 ## Credits
@@ -53,57 +52,61 @@ You can either use it from command line or import it as a module in your python 
 ### Module version
 It expects to be supplied with either a file path or a data buffer to parse.
 
-```
+```python
 import machofile
-macho = MachO(file_path='/path/to/machobinary')
-macho = MachO('/path/to/machobinary')
+macho = machofile.UniversalMachO(file_path='/path/to/machobinary')
+macho.parse()
 ```
-The above two lines are equivalent and would load the Mach-O file and parse it.
+
 If the data buffer is already available, it can be supplied directly with:
 
-```
+```python
 import machofile
-macho = MachO(data=bytes_variable)
-```
-
-You will then need to invoke the `parse()` method to start the parsing process,
-and can then call each function individually to parse only the structures you are interested in.
-
-```
+with open(file_path, 'rb') as f:
+    data = f.read()
+macho = machofile.UniversalMachO(data=data)
 macho.parse()
-dylib_cmd_list, dylib_lst = macho.get_dylib_commands()
-...
 ```
+
+For detailed usage of the API, check the dedicated [API documentation page](API_documentation_machofile.md).
 
 ### Command Line version
-You can now use `machofile.py` directly as a CLI tool. All CLI features are available from the same file you import as a module.
+You can use `machofile.py` also directly as a CLI tool. All CLI features are available from the same file you import as a module.
 
 ```
 % python3 machofile.py -h
-usage: machofile.py [-h] -f FILE [-a] [-g] [-hd] [-l] [-sg] [-d] [-u] [-ep]
-                    [-v] [-cs] [-i] [-e] [-sm] [--arch ARCH] [-j] [--raw]
+usage: machofile.py [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g] 
+                    [-hdr] [-i] [-l] [-seg] [-sig] [-sim] [-u] [-v] [--arch ARCH]
 
 Parse Mach-O file structures.
 
 options:
-  -h, --help            show this help message and exit
-  -f FILE, --file FILE  Path to the file to be parsed
-  -a, --all             Print all info about the file
-  -g, --general_info    Print general info about the file
-  -hd, --header         Print Mach-O header info
-  -l, --load_cmd_t      Print Load Command Table and Command list
-  -sg, --segments       Print File Segments info
-  -d, --dylib           Print Dylib Command Table and Dylib list
-  -u, --uuid            Print UUID
-  -ep, --entry_point    Print entry point information
-  -v, --version         Print version information
-  -cs, --code_signature Print code signature and entitlements information
-  -i, --imports         Print imported symbols
-  -e, --exports         Print exported symbols
-  -sm, --similarity     Print similarity hashes
-  --arch ARCH           Show info for specific architecture only (for Universal binaries)
-  -j, --json            Output data in JSON format
-  --raw                 Output raw values in JSON format (use with -j/--json)
+  -h, --help          show this help message and exit
+
+required arguments:
+  -f, --file FILE     Path to the file to be parsed
+
+output format options:
+  -j, --json          Output data in JSON format
+  --raw               Output raw values in JSON format (use with -j/--json)
+
+data extraction options:
+  -a, --all           Print all info about the file
+  -d, --dylib         Print Dylib Command Table and Dylib list
+  -e, --exports       Print exported symbols
+  -ep, --entry-point  Print entry point information
+  -g, --general_info  Print general info about the file
+  -hdr, --header      Print Mach-O header info
+  -i, --imports       Print imported symbols
+  -l, --load_cmd_t    Print Load Command Table and Command list
+  -seg, --segments    Print File Segments info
+  -sig, --signature   Print code signature and entitlements information
+  -sim, --similarity  Print similarity hashes
+  -u, --uuid          Print UUID
+  -v, --version       Print version information
+
+filter options:
+  --arch ARCH         Show info for specific architecture only (for Universal binaries)
 ```
 
 Example output:
@@ -120,7 +123,7 @@ Example output:
 [Mach-O Header]
         magic:       MH_MAGIC (32-bit), 0xFEEDFACE
         cputype:     Intel i386
-        cpusubtype:  x86_ALL, x86_64_H, x86_64_LIB64
+        cpusubtype:  X86_ALL
         filetype:    EXECUTE
         ncmds:       13
         sizeofcmds:  1180
@@ -146,6 +149,7 @@ Example output:
         LC_DYSYMTAB
         LC_LOAD_DYLIB
         LC_LOAD_DYLINKER
+        LC_SEGMENT
         LC_SYMTAB
         LC_UNIXTHREAD
         LC_UUID
@@ -173,11 +177,55 @@ Example output:
         d691c242-da49-1081-50d5-4f8991924b06
 
 [Entry Point]
-        Type: LC_UNIXTHREAD
-        Entry Point: 0x23f0
+        type:        LC_UNIXTHREAD
+        entry_address:9200
+        thread_data_size:72
 
 [Version Information]
         No version information found
+
+[Code Signature]
+        signed:      True
+        signing_status:Apple signed
+        certificates_info:
+            count:       3
+            certificates:
+              index:       0
+              size:        4815
+              subject:     Contains: Developer ID Certification Authority
+              issuer:      Unable to parse
+              is_apple_cert:True
+              type:        Developer ID Certification Authority
+
+              index:       1
+              size:        1215
+              subject:     Contains: Apple Root CA
+              issuer:      Unable to parse
+              is_apple_cert:True
+              type:        Apple Root CA
+
+              index:       2
+              size:        1385
+              subject:     Contains: Developer ID Application:
+              issuer:      Unable to parse
+              is_apple_cert:False
+              type:        Developer ID Application Certificate
+        entitlements_info:
+            count:       0
+            entitlements:
+        code_directory:
+            version:     131328
+            flags:       0
+            hash_offset: 144
+            identifier_offset:48
+            special_slots:3
+            signing_flags:
+                None
+            code_slots:  11
+            hash_size:   44640
+            hash_type:   335609868
+            hash_algorithm:Unknown (335609868)
+            identifier:  onmac.unspecified.installer
 
 [Imported Functions]
         /usr/lib/libSystem.B.dylib:
@@ -210,7 +258,7 @@ Example output:
                 _unsetenv$UNIX2003
 
 [Exported Symbols]
-        <unknown>:   
+        <unknown>:
                 _NXArgc
                 _NXArgv
                 ___progname
@@ -232,7 +280,7 @@ machofile supports JSON output for programmatic consumption of the parsed data. 
 The default JSON output provides human-readable values with proper formatting applied:
 
 ```bash
-% python3 machofile.py -j -hd -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a 
+% python3 machofile.py -j -hdr -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a 
 {
   "header": {
     "x86_64": {
@@ -265,7 +313,7 @@ The default JSON output provides human-readable values with proper formatting ap
 For applications that need to process raw numeric values, use the `--raw` flag:
 
 ```bash
-% python3 machofile.py -j --raw -hd -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a
+% python3 machofile.py -j --raw -hdr -f dec750b9d596b14aeab1ed6f6d6d370022443ceceb127e7d2468b903c2d9477a
 {
   "header": {
     "x86_64": {
