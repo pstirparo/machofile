@@ -414,6 +414,17 @@ CSMAGIC_EMBEDDED_ENTITLEMENTS = 0xFADE7171
 CSMAGIC_BLOBWRAPPER = 0xFADE0B01
 CSMAGIC_CODEDIRECTORY = 0xFADE0C02
 
+# Code signature slot types
+CSSLOT_CODEDIRECTORY = 0
+CSSLOT_INFOSLOT = 1
+CSSLOT_REQUIREMENTS = 2
+CSSLOT_RESOURCEDIR = 3
+CSSLOT_APPLICATION = 4
+CSSLOT_ENTITLEMENTS = 5
+CSSLOT_DER_ENTITLEMENTS = 7
+CSSLOT_SIGNATURESLOT = 0x10000
+# Certificates start at CSSLOT_SIGNATURESLOT + index
+
 # Mach-O dynamic linker constant
 LC_REQ_DYLD = 0x80000000
 
@@ -1425,17 +1436,20 @@ class MachO:
                     blob_magic, blob_length = struct.unpack(">II", 
                                                             signature_data[blob_offset:blob_offset + 8])
                     
-                    # Parse different blob types
-                    if blob_magic == CSMAGIC_EMBEDDED_ENTITLEMENTS:
+                    # Check for certificate slots (certificates start at CSSLOT_SIGNATURESLOT)
+                    if blob_type >= CSSLOT_SIGNATURESLOT:
+                        # This is a certificate blob
+                        if blob_magic == CSMAGIC_BLOBWRAPPER:
+                            cert_list = self._parse_certificate_blob(signature_data, blob_offset, blob_length, cert_index)
+                            if cert_list:
+                                certificates['certificates'].extend(cert_list)
+                                cert_index += len(cert_list)
+                    
+                    # Parse other blob types by slot type, not just magic
+                    elif blob_type == CSSLOT_ENTITLEMENTS and blob_magic == CSMAGIC_EMBEDDED_ENTITLEMENTS:
                         entitlements = self._parse_entitlements_blob(signature_data, blob_offset, blob_length)
                     
-                    elif blob_magic == CSMAGIC_BLOBWRAPPER:
-                        cert_info = self._parse_certificate_blob(signature_data, blob_offset, blob_length, cert_index)
-                        if cert_info:
-                            certificates['certificates'].append(cert_info)
-                            cert_index += 1
-                    
-                    elif blob_magic == CSMAGIC_CODEDIRECTORY:
+                    elif blob_type == CSSLOT_CODEDIRECTORY and blob_magic == CSMAGIC_CODEDIRECTORY:
                         code_directory = self._parse_code_directory_blob(signature_data, blob_offset, blob_length)
             
             # Update certificate count
@@ -1526,20 +1540,147 @@ class MachO:
             return {'count': 0, 'entitlements': {}}
 
     def _parse_certificate_blob(self, signature_data, offset, length, cert_index=0):
-        """Parse certificate information from blobwrapper."""
+        """Parse certificate information from blobwrapper.
+        
+        Apple stores certificate chains as a sequence of DER-encoded X.509 certificates
+        concatenated together within a single blobwrapper.
+        """
+        certificates = []
         try:
             # Skip blob header (8 bytes) to get to certificate data
             cert_start = offset + 8
             cert_end = offset + length
             
             if cert_end > len(signature_data):
-                return None
+                return certificates
                 
             cert_data = signature_data[cert_start:cert_end]
             
-            # Basic certificate parsing, full X.509 parsing would require either external libraries 
-            # or a lot of manual work. The idea behind is to extract basic information about the certificate.
-            # If the binary is signed then the user can follow up with external tools to extract all information.
+            # Parse multiple DER-encoded certificates from the blob
+            position = 0
+            current_cert_index = cert_index
+            
+            while position < len(cert_data):
+                # Look for DER certificate start sequence (0x30 0x82 for most certificates)
+                if position + 4 >= len(cert_data):
+                    break
+                    
+                if cert_data[position] == 0x30:
+                    # Parse DER length encoding
+                    if cert_data[position + 1] == 0x82:
+                        # Long form length (2 bytes)
+                        if position + 4 >= len(cert_data):
+                            break
+                        cert_length = struct.unpack(">H", cert_data[position + 2:position + 4])[0] + 4
+                    elif cert_data[position + 1] == 0x81:
+                        # Medium form length (1 byte)
+                        if position + 3 >= len(cert_data):
+                            break
+                        cert_length = cert_data[position + 2] + 3
+                    elif cert_data[position + 1] & 0x80 == 0:
+                        # Short form length
+                        cert_length = cert_data[position + 1] + 2
+                    else:
+                        # Skip if we can't parse the length
+                        position += 1
+                        continue
+                    
+                    # Validate that this looks like a real certificate (should be at least a few hundred bytes)
+                    if cert_length < 100:
+                        position += 1
+                        continue
+                    
+                    # Extract this certificate
+                    if position + cert_length <= len(cert_data):
+                        single_cert_data = cert_data[position:position + cert_length]
+                        
+                        # Additional validation: check if it contains certificate-like data
+                        if self._looks_like_certificate(single_cert_data):
+                            cert_info = self._parse_single_certificate(single_cert_data, current_cert_index)
+                            if cert_info:
+                                certificates.append(cert_info)
+                                current_cert_index += 1
+                        
+                        position += cert_length
+                    else:
+                        break
+                else:
+                    position += 1
+            
+            # Remove potential duplicates and invalid certificates
+            filtered_certificates = []
+            seen_types = set()
+            
+            for cert in certificates:
+                # Skip very small certificates that are likely false positives
+                if cert['size'] < 500:
+                    continue
+                
+                    
+                # For certificates with the same type, keep only the largest one
+                cert_key = (cert['type'], cert['subject'])
+                if cert_key not in seen_types:
+                    filtered_certificates.append(cert)
+                    seen_types.add(cert_key)
+                else:
+                    # Replace with larger certificate if found
+                    for i, existing_cert in enumerate(filtered_certificates):
+                        if (existing_cert['type'], existing_cert['subject']) == cert_key:
+                            if cert['size'] > existing_cert['size']:
+                                filtered_certificates[i] = cert
+                            break
+            
+            # Re-index certificates and sort them in typical chain order (leaf -> root)
+            for i, cert in enumerate(filtered_certificates):
+                cert['index'] = i
+            
+            return filtered_certificates
+            
+        except (struct.error, IndexError):
+            return certificates
+
+    def _looks_like_certificate(self, cert_data):
+        """Check if the data looks like a valid X.509 certificate."""
+        try:
+            # Basic checks for X.509 certificate structure
+            if len(cert_data) < 100:
+                return False
+            
+            # Should start with SEQUENCE tag (0x30)
+            if cert_data[0] != 0x30:
+                return False
+            
+            # Look for common X.509 certificate patterns
+            cert_string = cert_data.decode('utf-8', errors='ignore')
+            
+            # X.509 certificates typically contain these OID patterns or strings
+            certificate_indicators = [
+                '1.2.840.113549',  # RSA OID
+                '1.2.840.10045',   # ECDSA OID  
+                '2.5.4.',          # Attribute OID prefix
+                'Certificate',
+                'validity',
+                'issuer',
+                'subject',
+                'Apple',
+                'Developer',
+                'CA'
+            ]
+            
+            found_indicators = 0
+            for indicator in certificate_indicators:
+                if indicator in cert_string:
+                    found_indicators += 1
+            
+            # Require at least 2 indicators to consider it a certificate
+            return found_indicators >= 2
+            
+        except (UnicodeDecodeError, IndexError):
+            return False
+
+    def _parse_single_certificate(self, cert_data, cert_index):
+        """Parse a single DER-encoded X.509 certificate."""
+        try:
             cert_info = {
                 'index': cert_index,
                 'size': len(cert_data),
@@ -1552,23 +1693,36 @@ class MachO:
             # Look for common Apple certificate patterns in the raw data
             cert_string = cert_data.decode('utf-8', errors='ignore')
             
-            # Simple heuristics for Apple certificates
-            apple_indicators = [
-                ('Apple Inc.', 'Apple Root CA'),
-                ('Apple Root CA', 'Apple Root CA'),
-                ('Developer ID', 'Developer ID Certificate'),
-                ('Mac App Store', 'Mac App Store Certificate'),
-                ('Apple Development', 'Apple Development Certificate'),
-                ('Apple Distribution', 'Apple Distribution Certificate')
+            # Certificate type detection - distinguish between Apple CAs and third-party app certificates
+            # Order matters - more specific patterns first!
+            cert_patterns = [
+                # Third-party application certificate patterns (must come before more general patterns)
+                ('Developer ID Application:', 'Developer ID Application Certificate', False),  # Note the colon
+                
+                # Apple Certificate Authority patterns (these are Apple-issued)
+                ('Developer ID Certification Authority', 'Developer ID Certification Authority', True),
+                ('Apple Root CA', 'Apple Root CA', True),
+                ('Apple Worldwide Developer Relations Certification Authority', 'Apple WWDR CA', True),
+                ('Mac App Store', 'Mac App Store Certificate', True),
+                ('Apple Development', 'Apple Development Certificate', True),
+                ('Apple Distribution', 'Apple Distribution Certificate', True),
             ]
             
-            for indicator, cert_type in apple_indicators:
-                if indicator in cert_string:
-                    cert_info['is_apple_cert'] = True
+            # Check for specific certificate patterns first
+            for pattern, cert_type, is_apple in cert_patterns:
+                if pattern in cert_string:
+                    cert_info['is_apple_cert'] = is_apple
                     cert_info['type'] = cert_type
                     if cert_info['subject'] == 'Unable to parse':
-                        cert_info['subject'] = f"Contains: {indicator}"
+                        cert_info['subject'] = f"Contains: {pattern}"
                     break
+            else:
+                # Fallback: if it contains "Apple Inc." but didn't match specific patterns, it's likely an Apple cert
+                if 'Apple Inc.' in cert_string:
+                    cert_info['is_apple_cert'] = True
+                    cert_info['type'] = 'Apple Certificate'
+                    if cert_info['subject'] == 'Unable to parse':
+                        cert_info['subject'] = "Contains: Apple Inc."
             
             return cert_info
             
