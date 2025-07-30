@@ -274,13 +274,20 @@ CPU_TYPE_MAP = {
     CPU_TYPE_ALPHA: "DEC Alpha",
 }
 
-CPU_SUB_TYPE_MAP = {
-    3: "x86_ALL",
-    4: "x86_ARCH1",
-    8: "x86_64_ALL",
-    9: "x86_64_H",
-    10: "x86_64_LIB64",
-}
+# CPU_SUB_TYPE_MAP = {
+#     0: "ARM_ALL", 
+#     1: "ARM64_V8", 
+#     2: "ARM64E",   # CPU_SUBTYPE_ARM64E (special case, often appears as 0x80000002)
+#     3: "x86_ALL",
+#     4: "x86_ARCH1",
+#     5: "ARM_V4T",
+#     6: "ARM_V6", 
+#     7: "ARM_V5TEJ", 
+#     8: "x86_64_ALL",
+#     9: "x86_64_H",
+#     10: "x86_64_LIB64",
+#     2147483650: "ARM64E", # 0x80000002 - ARM64E with high bit set (common case)
+# }
 
 # list comprehensive but still incomplete. tbd.
 cpu_subtypes = [
@@ -304,7 +311,9 @@ cpu_subtypes = [
     ("CPU_SUBTYPE_ITANIUM_2", 0x1B),
     ("CPU_SUBTYPE_XEON", 0xC),
     ("CPU_SUBTYPE_XEON_MP", 0x1C),
+    ("CPU_SUBTYPE_X86_ALL", 0x3), # Generic x86 compatibility (both 32-bit and 64-bit)
     ("CPU_SUBTYPE_ARM_ALL", 0x0),
+    ("CPU_SUBTYPE_ARM64E", 0x2),
     ("CPU_SUBTYPE_ARM_V4T", 0x5),
     ("CPU_SUBTYPE_ARM_V6", 0x6),
     ("CPU_SUBTYPE_ARM_V5", 0x7),
@@ -318,11 +327,23 @@ cpu_subtypes = [
     ("CPU_SUBTYPE_ARM_V7M", 0xF),
     ("CPU_SUBTYPE_ARM_V7EM", 0x10),
     ("CPU_SUBTYPE_ARM_V8", 0xD),
-    ("CPU_SUBTYPE_ARM64_ALL", 0x0),
+    # ("CPU_SUBTYPE_ARM64_ALL", 0x0),
     ("CPU_SUBTYPE_ARM64_V8", 0x1),
+    ("CPU_SUBTYPE_ARM64E", 0x80000002),  # ARM64E with capability bits set
 ]
 
 CPU_SUBTYPE_MAP = two_way_dict(cpu_subtypes)
+
+# ARM64E capability bit constants from Apple source
+# https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/osfmk/mach/machine.h#L178
+# https://github.com/llvm/llvm-project/blob/main/llvm/include/llvm/BinaryFormat/MachO.h#L1647
+CPU_SUBTYPE_MASK = 0xff000000  # mask for feature flags
+CPU_SUBTYPE_LIB64 = 0x80000000  # 64 bit libraries (also used for PtrAuth ABI on ARM64E)
+
+# ARM64E capability bit constants
+CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK = 0x80000000  # Bit 63: Versioned PtrAuth ABI (same as LIB64)
+CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK = 0x40000000     # Bit 62: Kernel PtrAuth ABI
+CPU_SUBTYPE_ARM64E_PTRAUTH_MASK = 0x0f000000                # Bits [59:56]: 4-bit PtrAuth ABI version
 
 # Mach-O header filetypes
 macho_header_filetype = [
@@ -821,15 +842,84 @@ class MachO:
     def decode_cpusubtype(self, cputype, cpusubtype_value):
         mask = 0xFFFFFFFF  # to get unsigned value
         cpusubtype_value = cpusubtype_value & mask
-        decoded_subtypes = []
-
-        # Check if the cpusubtype is combined or singular
-        for subtype, subtype_name in CPU_SUB_TYPE_MAP.items():
-            if cpusubtype_value & subtype:
-                decoded_subtypes.append(subtype_name)
-        return (
-            ", ".join(decoded_subtypes) if decoded_subtypes else str(cpusubtype_value)
-        )
+        
+        # Exact match using CPU_SUBTYPE_MAP
+        if cpusubtype_value in CPU_SUBTYPE_MAP:
+            base_name = CPU_SUBTYPE_MAP[cpusubtype_value].replace("CPU_SUBTYPE_", "")
+            
+            # Special handling for ARM64E with capability bits even if exact match exists
+            if (cputype == CPU_TYPE_ARM64 and base_name == "ARM64E" and 
+                cpusubtype_value != 2 and cpusubtype_value & CPU_SUBTYPE_MASK):
+                # Decode capability bits for better information
+                capability_info = []
+                
+                # Check for Versioned PtrAuth ABI (bit 63)
+                if cpusubtype_value & CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK:
+                    capability_info.append("Versioned PtrAuth")
+                    
+                    # Extract PtrAuth ABI version (bits 59-56)
+                    ptrauth_version = (cpusubtype_value & CPU_SUBTYPE_ARM64E_PTRAUTH_MASK) >> 24
+                    if ptrauth_version:
+                        capability_info.append(f"v{ptrauth_version}")
+                
+                # Check for Kernel PtrAuth ABI (bit 62)
+                if cpusubtype_value & CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK:
+                    capability_info.append("Kernel PtrAuth")
+                
+                if capability_info:
+                    return f"{base_name} ({' '.join(capability_info)})"
+            
+            return base_name
+        
+        # Handle x86/x86_64 LIB64 flag (0x80000000)
+        if (cputype in [CPU_TYPE_I386, CPU_TYPE_X86_64] and 
+            cpusubtype_value & CPU_SUBTYPE_LIB64):
+            # Extract base subtype and LIB64 flag
+            base_subtype = cpusubtype_value & ~CPU_SUBTYPE_LIB64
+            if base_subtype in CPU_SUBTYPE_MAP:
+                base_name = CPU_SUBTYPE_MAP[base_subtype].replace("CPU_SUBTYPE_", "")
+                return f"{base_name} (LIB64)"
+        
+        # For ARM64 architectures, handle capability bits that encode PtrAuth ABI information
+        # References: 
+        # - https://objective-see.org/blog/blog_0x80.html
+        # - llvm-project/llvm/include/llvm/BinaryFormat/MachO.h
+        if cputype == CPU_TYPE_ARM64:
+            # Extract base subtype and capability bits using correct masks
+            base_subtype = cpusubtype_value & ~CPU_SUBTYPE_MASK  # Remove capability bits
+            capability_bits = cpusubtype_value & CPU_SUBTYPE_MASK  # Extract capability bits
+            
+            # Check if we have a mapping for the base subtype
+            if base_subtype in CPU_SUBTYPE_MAP:
+                base_name = CPU_SUBTYPE_MAP[base_subtype].replace("CPU_SUBTYPE_", "")
+                
+                # For ARM64E, decode capability bits with meaningful information
+                if base_subtype == 2 and capability_bits:  # CPU_SUBTYPE_ARM64E with capabilities
+                    capability_info = []
+                    
+                    # Check for Versioned PtrAuth ABI (bit 63)
+                    if cpusubtype_value & CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK:
+                        capability_info.append("Versioned PtrAuth")
+                        
+                        # Extract PtrAuth ABI version (bits 59-56)
+                        ptrauth_version = (cpusubtype_value & CPU_SUBTYPE_ARM64E_PTRAUTH_MASK) >> 24
+                        if ptrauth_version:
+                            capability_info.append(f"v{ptrauth_version}")
+                    
+                    # Check for Kernel PtrAuth ABI (bit 62)
+                    if cpusubtype_value & CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK:
+                        capability_info.append("Kernel PtrAuth")
+                    
+                    if capability_info:
+                        return f"{base_name} ({' '.join(capability_info)})"
+                    else:
+                        # Fallback to hex if we have unknown capability bits
+                        return f"{base_name} (0x{cpusubtype_value:X})"
+                
+                return base_name
+        
+        # If no exact match found, return the numeric value
+        return str(cpusubtype_value)
 
     def decode_flags(self, flags_value):
         decoded_flags = []
