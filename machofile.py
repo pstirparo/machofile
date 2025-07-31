@@ -160,7 +160,7 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # } CS_CodeDirectory
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2025.07.30"
+__version__ = "2025.07.31"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
@@ -1177,6 +1177,7 @@ class MachO:
         uuid = None
         entry_point = None
         version_info = None
+        code_signature_data = None
 
         self.f.seek(0)
         # Read the magic value to determine byte order and architecture
