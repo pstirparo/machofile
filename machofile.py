@@ -722,10 +722,172 @@ class UniversalMachO:
             return macho_instance.get_similarity_hashes() if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_similarity_hashes() 
-                   for arch, macho in self.architectures.items()}
+            result = {arch: macho.get_similarity_hashes() 
+                     for arch, macho in self.architectures.items()}
+            
+            # Add combined similarity hashes for FAT binaries
+            result["combined"] = self._get_combined_similarity_hashes()
+            
+            return result
         else:
             return self.macho.get_similarity_hashes()
+    
+    def _get_combined_similarity_hashes(self):
+        """Get combined similarity hashes by merging data from all architectures."""
+        if not self.is_fat:
+            return None
+            
+        # Collect all imports from all architectures
+        all_imports = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'imported_functions') and macho_instance.imported_functions:
+                for dylib, imports in macho_instance.imported_functions.items():
+                    for imp in imports:
+                        all_imports.append(imp.strip().lower())
+        
+        # Collect all exports from all architectures
+        all_exports = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'exported_symbols') and macho_instance.exported_symbols:
+                for dylib, exports in macho_instance.exported_symbols.items():
+                    for exp in exports:
+                        all_exports.append(exp.lower())
+        
+        # Collect all dylibs from all architectures
+        all_dylibs = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'dylib_names') and macho_instance.dylib_names:
+                for dylib in macho_instance.dylib_names:
+                    all_dylibs.append(dylib.decode().lower())
+        
+        # Calculate combined hashes
+        combined_hashes = {}
+
+        # Combined dylib hash
+        if all_dylibs:
+            sorted_dylibs = sorted(list(dict.fromkeys(all_dylibs)))
+            combined_hashes["dylib_hash"] = md5(",".join(sorted_dylibs).encode()).hexdigest()
+        else:
+            combined_hashes["dylib_hash"] = None
+                    
+        # Combined import hash
+        if all_imports:
+            sorted_imports = sorted(list(dict.fromkeys(all_imports)))
+            combined_hashes["import_hash"] = md5(",".join(sorted_imports).encode()).hexdigest()
+        else:
+            combined_hashes["import_hash"] = None
+        
+        # Combined export hash
+        if all_exports:
+            sorted_exports = sorted(list(dict.fromkeys(all_exports)))
+            combined_hashes["export_hash"] = md5(",".join(sorted_exports).encode()).hexdigest()
+        else:
+            combined_hashes["export_hash"] = None
+        
+        # Combined symhash - collect symbols from all architectures
+        all_symbols = []
+        for macho_instance in self.architectures.values():
+            symbols = self._extract_symbols_from_macho(macho_instance)
+            all_symbols.extend(symbols)
+        
+        if all_symbols:
+            sorted_symbols = sorted(list(dict.fromkeys(all_symbols)))
+            combined_hashes["symhash"] = md5(",".join(sorted_symbols).encode()).hexdigest()
+        else:
+            combined_hashes["symhash"] = None
+        
+        return combined_hashes
+    
+    def _extract_symbols_from_macho(self, macho_instance):
+        """Extract symbols from a MachO instance for combined symhash calculation."""
+        symbols = []
+        
+        try:
+            # Save current file position
+            original_pos = macho_instance.f.tell()
+            
+            # Reset to beginning of this MachO's data
+            if hasattr(macho_instance, 'offset') and macho_instance.offset is not None:
+                macho_instance.f.seek(macho_instance.offset)
+            else:
+                macho_instance.f.seek(0)
+            
+            magic = struct.unpack("I", macho_instance.f.read(4))[0]
+            is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+            byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+            
+            # Adjust the position to skip cputype and cpusubtype
+            macho_instance.f.seek(12, 1)
+            ncmds = struct.unpack("I", macho_instance.f.read(4))[0]
+            if is_64_bit:
+                macho_instance.f.seek(12, 1)
+            else:
+                macho_instance.f.seek(8, 1)
+            
+            symtab = None
+            for _ in range(ncmds):
+                cmd_start = macho_instance.f.tell()
+                cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, macho_instance.f.read(8))
+                rest_of_cmd = macho_instance.f.read(cmdsize - 8)
+                full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+                if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                    symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+                macho_instance.f.seek(cmd_start + cmdsize)
+            
+            if not symtab:
+                return symbols
+            
+            symoff = symtab[2]
+            nsyms = symtab[3]
+            stroff = symtab[4]
+            strsize = symtab[5]
+            
+            macho_instance.f.seek(stroff)
+            string_table = macho_instance.f.read(strsize)
+            macho_instance.f.seek(symoff)
+            if is_64_bit:
+                nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+                nlist_size = struct.calcsize(nlist_fmt)
+            else:
+                nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+                nlist_size = struct.calcsize(nlist_fmt)
+            
+            for idx in range(nsyms):
+                macho_instance.f.seek(symoff + idx * nlist_size)
+                entry = macho_instance.f.read(nlist_size)
+                if len(entry) != nlist_size:
+                    continue
+                if is_64_bit:
+                    n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+                else:
+                    n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+                # Skip STAB/debug symbols
+                if n_type & N_STAB != 0:
+                    continue
+                # Only external
+                if not (n_type & N_EXT):
+                    continue
+                # Only undefined
+                if (n_type & N_TYPE) != N_UNDF:
+                    continue
+                if n_strx == 0:
+                    continue
+                str_offset = n_strx
+                if str_offset < len(string_table):
+                    name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                    if not name:
+                        continue
+                    symbol_name = name.decode(errors="replace")
+                    symbols.append(symbol_name)
+            
+            # Restore original file position
+            macho_instance.f.seek(original_pos)
+            
+        except Exception:
+            # If we can't extract symbols, return empty list
+            pass
+        
+        return symbols
     
     # Attribute delegation for CLI compatibility
     @property
