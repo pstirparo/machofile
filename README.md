@@ -1,17 +1,17 @@
 # machofile
-machofile is a module to parse Mach-O binary files, with a focus on malware analysis and reverse engineering.
+**machofile** is a module to parse Mach-O binary files, with a focus on malware analysis and reverse engineering.
 
-Inspired by Ero Carrera's pefile, this module aims to provide a similar capability but for Mach-O binaries instead. 
+Inspired by Ero Carrera's pefile, this module aims to provide similar capabilities but for Mach-O binaries instead. 
 Reference material and documentation used to gain the file format knowledge, the basic structures and constant are taken from the resources listed below.
 
-machofile is self-contained. The module has no dependencies; it is endianness independent; and it works on macOS, Windows, and Linux.
+**machofile** is self-contained. The module has no dependencies; it is endianness independent; and it works on macOS, Windows, and Linux.
 
-While there are other mach-o parsing modules out there, the motivations behind developing this one are:
+While there are other Mach-o parsing modules out there, the motivations behind developing this one are:
 - first and foremost, for me this was a great way to deep dive and learn more about the Mach-O format and structures
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is still officially out of beta (2025.07.30), but still please let me know if you try or find bugs but also... be gentle ;) code will be optimized and more features will be added.
+This is officially out of beta (2025.07.30), but still please let me know if you try or find bugs but also... be gentle ;) code will be optimized and more features will be added.
 
 **Current Features:**
 - Parse Mach-O Header
@@ -21,7 +21,7 @@ This is still officially out of beta (2025.07.30), but still please let me know 
 - Parse Dylib List
 - Extract imported function
 - Extract Exported Symbols
-- Hashes: dylib hash, import hash, export hash, symhash
+- Hashes: dylib hash, import hash, export hash, entitlement hash, symhash
 - Segment entropy calculation
 - Extract Entry point
 - Extract UUID
@@ -40,13 +40,8 @@ _Note: as of now, this has initially been tested against x86, x86_64, arm64, and
 - Packer detection
 - ...
 
-## Credits
-Those are the people that I would like to thank for being the inspiration that led me to write this module:
-- Ero Carrera ([@erocarrera](https://twitter.com/erocarrera)) for writing and maintaining the [pefile](https://github.com/erocarrera/pefile/tree/master) module
-- Patrick Wardle ([@patrickwardle](https://twitter.com/patrickwardle)) for the great work in sharing his macOS malware analysis and research, and brigning to life [OBTS](https://objectivebythesea.org/) :)
-- Greg Lesnewich ([@greglesnewich](https://twitter.com/greglesnewich)) for his work on [macho-similarity](https://github.com/g-les/macho_similarity)
 
-## Usage and example
+## Usage and examples
 You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
 
 ### Module version
@@ -68,17 +63,17 @@ macho = machofile.UniversalMachO(data=data)
 macho.parse()
 ```
 
-For detailed usage of the API, check the dedicated [API documentation page](API_documentation_machofile.md).
+For detailed usage of the API, check the dedicated [API documentation page](doc/API_documentation_machofile.md).
 
 ### Command Line version
-You can use `machofile.py` also directly as a CLI tool. All CLI features are available from the same file you import as a module.
+You can use `machofile` also directly as a CLI tool if you installed it via `pip`, or as standalone tool as `python3 machofile.py`. All the same features are available as module, as well as command line tool.
 
 ```
-% python3 machofile.py -h
-usage: machofile.py [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g] 
+% machofile -h
+usage: machofile [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g] 
                     [-hdr] [-i] [-l] [-seg] [-sig] [-sim] [-u] [-v] [--arch ARCH]
 
-Parse Mach-O file structures.
+Parse Mach-O binary structures. (version 2025.08.05)
 
 options:
   -h, --help          show this help message and exit
@@ -111,23 +106,23 @@ filter options:
 
 Example output:
 ```
-% python3 machofile.py -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+% machofile -a -f b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
 
 [General File Info]
-        Filename:    b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
-        Filesize:    54240
-        MD5:         20ffe440e4f557b9e03855b5da2b3c9c
-        SHA1:        1bf61ecad8568a774f9fba726a254a9603d09f33
-        SHA256:      b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+        Filename:         b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
+        Filesize:         54240
+        MD5:              20ffe440e4f557b9e03855b5da2b3c9c
+        SHA1:             1bf61ecad8568a774f9fba726a254a9603d09f33
+        SHA256:           b4f68a58658ceceb368520dafc35b270272ac27b8890d5b3ff0b968170471e2b
 
 [Mach-O Header]
-        magic:       MH_MAGIC (32-bit), 0xFEEDFACE
-        cputype:     Intel i386
-        cpusubtype:  X86_ALL
-        filetype:    EXECUTE
-        ncmds:       13
-        sizeofcmds:  1180
-        flags:       NOUNDEFS, DYLDLINK, TWOLEVEL
+        magic:            MH_MAGIC (32-bit), 0xFEEDFACE
+        cputype:          Intel i386
+        cpusubtype:       X86_ALL
+        filetype:         EXECUTE
+        ncmds:            13
+        sizeofcmds:       1180
+        flags:            NOUNDEFS, DYLDLINK, TWOLEVEL
 
 [Load Cmd table]
         {'cmd': 'LC_SEGMENT', 'cmdsize': 56}
@@ -177,55 +172,55 @@ Example output:
         d691c242-da49-1081-50d5-4f8991924b06
 
 [Entry Point]
-        type:        LC_UNIXTHREAD
-        entry_address:9200
-        thread_data_size:72
+        type:             LC_UNIXTHREAD
+        entry_address:    9200
+        thread_data_size: 72
 
 [Version Information]
         No version information found
 
 [Code Signature]
-        signed:      True
-        signing_status:Apple signed
+        signed:           True
+        signing_status:   Apple signed
         certificates_info:
-            count:       3
+            count:            3
             certificates:
-              index:       0
-              size:        4815
-              subject:     Contains: Developer ID Certification Authority
-              issuer:      Unable to parse
-              is_apple_cert:True
-              type:        Developer ID Certification Authority
+              index:            0
+              size:             4815
+              subject:          Contains: Developer ID Certification Authority
+              issuer:           Unable to parse
+              is_apple_cert:    True
+              type:             Developer ID Certification Authority
 
-              index:       1
-              size:        1215
-              subject:     Contains: Apple Root CA
-              issuer:      Unable to parse
-              is_apple_cert:True
-              type:        Apple Root CA
+              index:            1
+              size:             1215
+              subject:          Contains: Apple Root CA
+              issuer:           Unable to parse
+              is_apple_cert:    True
+              type:             Apple Root CA
 
-              index:       2
-              size:        1385
-              subject:     Contains: Developer ID Application:
-              issuer:      Unable to parse
-              is_apple_cert:False
-              type:        Developer ID Application Certificate
+              index:            2
+              size:             1385
+              subject:          Contains: Developer ID Application:
+              issuer:           Unable to parse
+              is_apple_cert:    False
+              type:             Developer ID Application Certificate
         entitlements_info:
-            count:       0
+            count:            0
             entitlements:
         code_directory:
-            version:     131328
-            flags:       0
-            hash_offset: 144
+            version:          131328
+            flags:            0
+            hash_offset:      144
             identifier_offset:48
-            special_slots:3
+            special_slots:    3
             signing_flags:
                 None
-            code_slots:  11
-            hash_size:   44640
-            hash_type:   335609868
-            hash_algorithm:Unknown (335609868)
-            identifier:  onmac.unspecified.installer
+            code_slots:       11
+            hash_size:        44640
+            hash_type:        335609868
+            hash_algorithm:   Unknown (335609868)
+            identifier:       onmac.unspecified.installer
 
 [Imported Functions]
         /usr/lib/libSystem.B.dylib:
@@ -267,14 +262,14 @@ Example output:
                 start
 
 [Similarity Hashes]
-        dylib_hash:  0556bed5dc31bddaee73f3234b3c577b
-        import_hash: 0bae89995ad3900987c49c0bea1d17fe
-        export_hash: 824e359e3d0ad7283d0982bd5da2e8fd
-        symhash:     15e6c1aeba01be1404901f7152213779
+        dylib_hash:       0556bed5dc31bddaee73f3234b3c577b
+        export_hash:      824e359e3d0ad7283d0982bd5da2e8fd
+        import_hash:      0bae89995ad3900987c49c0bea1d17fe
+        symhash:          15e6c1aeba01be1404901f7152213779
 ```
 
 ### JSON Output
-machofile supports JSON output for programmatic consumption of the parsed data. The JSON output comes in two formats:
+**machofile** supports JSON output for programmatic consumption of the parsed data. The JSON output comes in two formats:
 
 #### Human-Readable JSON (Default)
 The default JSON output provides human-readable values with proper formatting applied:
@@ -347,6 +342,12 @@ For applications that need to process raw numeric values, use the `--raw` flag:
 - `--raw`: Output raw numeric values instead of formatted strings (must be used with `-j`)
 
 JSON output supports all the same analysis options as the standard output (`-a`, `-hd`, `-l`, `-sg`, etc.) and works with both single-architecture and Universal (FAT) binaries.
+
+## Credits
+Those are the people that I would like to thank for being the inspiration that led me to write this module:
+- Ero Carrera ([@erocarrera](https://twitter.com/erocarrera)) for writing and maintaining the [pefile](https://github.com/erocarrera/pefile/tree/master) module
+- Patrick Wardle ([@patrickwardle](https://twitter.com/patrickwardle)) for the great work in sharing his macOS malware analysis and research, and brigning to life [OBTS](https://objectivebythesea.org/) :)
+- Greg Lesnewich ([@greg-l.bsky.social](https://bsky.app/profile/greg-l.bsky.social)) and Jacob Latonis ([@jacoblatonis.me](https://bsky.app/profile/jacoblatonis.me)) for their work on mach-o similarity and the continuous, nerding and enlightening brainstormings sessions on Mach-O binary format. Check you their OBTS v7 presentation on YT.
 
 ## Reference/Documentation links:
 - https://opensource.apple.com/source/xnu/xnu-2050.18.24/EXTERNAL_HEADERS/mach-o/loader.h
