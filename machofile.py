@@ -2421,24 +2421,62 @@ class MachO:
         except (struct.error, UnicodeDecodeError):
             return None
 
+#/* code signing attributes of a process */
+#define CS_VALID                    0x00000001  /* dynamically valid */
+#define CS_ADHOC                    0x00000002  /* ad hoc signed */
+#define CS_GET_TASK_ALLOW           0x00000004  /* has get-task-allow entitlement */
+#define CS_INSTALLER                0x00000008  /* has installer entitlement */
+
+#define CS_FORCED_LV                0x00000010  /* Library Validation required by Hardened System Policy */
+#define CS_INVALID_ALLOWED          0x00000020  /* (macOS Only) Page invalidation allowed by task port policy */
+
+#define CS_HARD                     0x00000100  /* don't load invalid pages */
+#define CS_KILL                     0x00000200  /* kill process if it becomes invalid */
+#define CS_CHECK_EXPIRATION         0x00000400  /* force expiration checking */
+#define CS_RESTRICT                 0x00000800  /* tell dyld to treat restricted */
+
+#define CS_ENFORCEMENT              0x00001000  /* require enforcement */
+#define CS_REQUIRE_LV               0x00002000  /* require library validation */
+#define CS_ENTITLEMENTS_VALIDATED   0x00004000  /* code signature permits restricted entitlements */
+#define CS_NVRAM_UNRESTRICTED       0x00008000  /* has com.apple.rootless.restricted-nvram-variables.heritable entitlement */
+
+#define CS_RUNTIME                  0x00010000  /* Apply hardened runtime policies */
+#define CS_LINKER_SIGNED            0x00020000  /* Automatically signed by the linker */
+
+
+    # Flags adjusted based on
+    # https://developer.apple.com/documentation/security/seccodesignatureflags
+    # https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/osfmk/kern/cs_blobs.h#L35
     def _decode_signing_flags(self, flags):
         """Decode code signing flags to human-readable format."""
+        # keeping the original flag_meanings for reference
+        # flag_meanings = {
+        #     0x1: 'Host',
+        #     0x2: 'Adhoc',
+        #     0x4: 'ForceHard',
+        #     0x8: 'Kill',
+        #     0x10: 'Hard',
+        #     0x20: 'Runtime',
+        #     0x40: 'LinkerSigned',
+        #     0x100: 'AllowUnsignedExecutables',
+        #     0x200: 'DebuggingAllowed',
+        #     0x400: 'JustMyCode',
+        #     0x800: 'Restrict',
+        #     0x1000: 'Enforcement',
+        #     0x2000: 'LibraryValidation'
+        # }
         flag_meanings = {
-            0x1: 'Host',
-            0x2: 'Adhoc',
-            0x4: 'ForceHard',
-            0x8: 'Kill',
-            0x10: 'Hard',
-            0x20: 'Runtime',
-            0x40: 'LinkerSigned',
-            0x100: 'AllowUnsignedExecutables',
-            0x200: 'DebuggingAllowed',
-            0x400: 'JustMyCode',
-            0x800: 'Restrict',
-            0x1000: 'Enforcement',
-            0x2000: 'LibraryValidation'
+            0x00000001: 'Host',
+            0x00000002: 'Adhoc',
+            0x00000100: 'Hard',
+            0x00000200: 'Kill',
+            0x00000400: 'CheckExpiration',
+            0x00001000: 'Enforcement',
+            0x00002000: 'RequireLV',
+            0x00010000: 'Runtime',
+            0x00020000: 'LinkerSigned'
         }
-        
+
         active_flags = []
         for flag_value, flag_name in flag_meanings.items():
             if flags & flag_value:
