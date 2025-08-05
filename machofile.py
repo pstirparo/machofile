@@ -824,6 +824,51 @@ class UniversalMachO:
         
         return combined_hashes
     
+    def get_dylib_hash(self, arch=None):
+        """Get dylib hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_dylib_hash()
+            return None
+        else:
+            if self.is_fat:
+                # Return combined dylib hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("dylib_hash") if combined_hashes else None
+            else:
+                return self.macho.get_dylib_hash()
+
+    def get_import_hash(self, arch=None):
+        """Get import hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_import_hash()
+            return None
+        else:
+            if self.is_fat:
+                # Return combined import hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("import_hash") if combined_hashes else None
+            else:
+                return self.macho.get_import_hash()
+
+    def get_export_hash(self, arch=None):
+        """Get export hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_export_hash()
+            return None
+        else:
+            if self.is_fat:
+                # Return combined export hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("export_hash") if combined_hashes else None
+            else:
+                return self.macho.get_export_hash()
+
     def get_entitlement_hash(self, arch=None):
         """Get entitlement hash for specific architecture or combined for all architectures."""
         if arch:
@@ -838,6 +883,21 @@ class UniversalMachO:
                 return combined_hashes.get("entitlement_hash") if combined_hashes else None
             else:
                 return self.macho.get_entitlement_hash()
+
+    def get_symhash(self, arch=None):
+        """Get symhash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_symhash()
+            return None
+        else:
+            if self.is_fat:
+                # Return combined symhash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("symhash") if combined_hashes else None
+            else:
+                return self.macho.get_symhash()
     
     def _extract_symbols_from_macho(self, macho_instance):
         """Extract symbols from a MachO instance for combined symhash calculation."""
