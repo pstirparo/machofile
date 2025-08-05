@@ -772,21 +772,44 @@ class UniversalMachO:
             combined_hashes["dylib_hash"] = md5(",".join(sorted_dylibs).encode()).hexdigest()
         else:
             combined_hashes["dylib_hash"] = None
+                            
+        # Combined entitlement hash - collect entitlements from all architectures
+        all_entitlements = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'code_signature_info') and macho_instance.code_signature_info:
+                entitlements_info = macho_instance.code_signature_info.get('entitlements_info', {})
+                entitlements = entitlements_info.get('entitlements', {})
+                for entitlement_key, entitlement_data in entitlements.items():
+                    # Always include the entitlement key
+                    all_entitlements.append(entitlement_key.strip().lower())
                     
-        # Combined import hash
-        if all_imports:
-            sorted_imports = sorted(list(dict.fromkeys(all_imports)))
-            combined_hashes["import_hash"] = md5(",".join(sorted_imports).encode()).hexdigest()
+                    # For array entitlements, also include the array values
+                    if entitlement_data.get('type') == 'array' and 'value' in entitlement_data:
+                        array_values = entitlement_data['value']
+                        if isinstance(array_values, list):
+                            for value in array_values:
+                                all_entitlements.append(value.strip().lower())
+        
+        if all_entitlements:
+            sorted_entitlements = sorted(list(dict.fromkeys(all_entitlements)))
+            combined_hashes["entitlement_hash"] = md5(",".join(sorted_entitlements).encode()).hexdigest()
         else:
-            combined_hashes["import_hash"] = None
+            combined_hashes["entitlement_hash"] = None
         
         # Combined export hash
         if all_exports:
             sorted_exports = sorted(list(dict.fromkeys(all_exports)))
             combined_hashes["export_hash"] = md5(",".join(sorted_exports).encode()).hexdigest()
         else:
-            combined_hashes["export_hash"] = None
-        
+            combined_hashes["export_hash"] = None   
+
+        # Combined import hash
+        if all_imports:
+            sorted_imports = sorted(list(dict.fromkeys(all_imports)))
+            combined_hashes["import_hash"] = md5(",".join(sorted_imports).encode()).hexdigest()
+        else:
+            combined_hashes["import_hash"] = None
+
         # Combined symhash - collect symbols from all architectures
         all_symbols = []
         for macho_instance in self.architectures.values():
@@ -800,6 +823,21 @@ class UniversalMachO:
             combined_hashes["symhash"] = None
         
         return combined_hashes
+    
+    def get_entitlement_hash(self, arch=None):
+        """Get entitlement hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_entitlement_hash()
+            return None
+        else:
+            if self.is_fat:
+                # Return combined entitlement hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("entitlement_hash") if combined_hashes else None
+            else:
+                return self.macho.get_entitlement_hash()
     
     def _extract_symbols_from_macho(self, macho_instance):
         """Extract symbols from a MachO instance for combined symhash calculation."""
@@ -980,6 +1018,24 @@ class UniversalMachO:
                    for arch_name, macho_instance in self.architectures.items()}
         else:
             return getattr(self.macho, 'exported_symbols', None)
+    
+    @property
+    def entitlements(self):
+        """Get entitlements from code signature info."""
+        if self.is_fat:
+            entitlements_dict = {}
+            for arch_name, macho_instance in self.architectures.items():
+                if hasattr(macho_instance, 'code_signature_info') and macho_instance.code_signature_info:
+                    entitlements_info = macho_instance.code_signature_info.get('entitlements_info', {})
+                    entitlements_dict[arch_name] = entitlements_info.get('entitlements', {})
+                else:
+                    entitlements_dict[arch_name] = {}
+            return entitlements_dict
+        else:
+            if hasattr(self.macho, 'code_signature_info') and self.macho.code_signature_info:
+                entitlements_info = self.macho.code_signature_info.get('entitlements_info', {})
+                return entitlements_info.get('entitlements', {})
+            return {}
 
 class MachO:
     """A Mach-O representation.
@@ -2780,6 +2836,43 @@ class MachO:
 
         return export_hash
 
+    # This method has been defined by Greg Lesnewich (@greglesnewich) and Jacob Latonis (@jacoblatonis)
+    # at their OBTS v7 presentation "A Better Way, YARA-X, Mach-O Feature Extraction, and Malware Similarity" 
+    # https://www.youtube.com/watch?v=kXrGvOfasps
+    def get_entitlement_hash(self):
+        """Get the entitlement hash of the Mach-O file.
+
+        Returns:
+            entitlement_hash: the entitlement hash of the Mach-O file.
+        """
+        if not hasattr(self, 'code_signature_info') or not self.code_signature_info:
+            return None
+            
+        entitlements_info = self.code_signature_info.get('entitlements_info', {})
+        entitlements = entitlements_info.get('entitlements', {})
+        
+        if not entitlements:
+            return None
+            
+        # Extract entitlement keys and array values, normalize them
+        sorted_lowered_entitlements = []
+        for entitlement_key, entitlement_data in entitlements.items():
+            # The entitlement name is the entitlement key
+            sorted_lowered_entitlements.append(entitlement_key.strip().lower())
+            
+            # For array entitlements, also include the array values
+            if entitlement_data.get('type') == 'array' and 'value' in entitlement_data:
+                array_values = entitlement_data['value']
+                if isinstance(array_values, list):
+                    for value in array_values:
+                        sorted_lowered_entitlements.append(value.strip().lower())
+        
+        sorted_lowered_entitlements = sorted(sorted_lowered_entitlements)
+        sorted_lowered_entitlements = list(dict.fromkeys(sorted_lowered_entitlements))
+        entitlement_hash = md5(",".join(sorted_lowered_entitlements).encode()).hexdigest()
+
+        return entitlement_hash
+
     def get_symhash_dict(self):
         """Get the symhash for the Mach-O file, following the original Anomali Labs/CRITS logic.
 
@@ -2895,13 +2988,14 @@ class MachO:
         Returns:
             similarity_hashes: A dictionary containing the similarity hashes
                 of the Mach-O file. Currently implemented are: dylib_hash,
-                import_hash, export_hash, and symhash.
+                import_hash, export_hash, entitlement_hash, and symhash.
         """
         similarity_hashes = {}
 
         similarity_hashes["dylib_hash"] = self.get_dylib_hash()
-        similarity_hashes["import_hash"] = self.get_import_hash()
+        similarity_hashes["entitlement_hash"] = self.get_entitlement_hash()
         similarity_hashes["export_hash"] = self.get_export_hash()
+        similarity_hashes["import_hash"] = self.get_import_hash()
         similarity_hashes["symhash"] = self.get_symhash()
 
         return similarity_hashes
