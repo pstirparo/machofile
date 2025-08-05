@@ -12,7 +12,7 @@ License: MIT
 
 from .machofile import UniversalMachO, MachO, main
 
-__version__ = "2025.07.31"
+__version__ = "2025.08.05"
 __author__ = "Pasquale Stirparo"
 __license__ = "MIT"
 
