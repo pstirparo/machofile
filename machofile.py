@@ -3235,7 +3235,7 @@ def print_dict(d, indent_level=1):
                     print(f"{indent}\t{item}")
         else:
             if v is not None:
-                print(f"{indent}{k + ':':<13}{v}")
+                print(f"{indent}{k + ':':<18}{v}")
 
 def print_list(l):
     for i in l:
