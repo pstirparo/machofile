@@ -11,7 +11,7 @@ While there are other Mach-o parsing modules out there, the motivations behind d
 - to provide a simple way to parse Mach-O files for analysis
 - to not depend on external modules (e.g. lief, macholib, macho, etc.), since everything is directly extracted from the file and is all in pure python.
 
-This is officially out of beta (2025.07.30), but still please let me know if you try or find bugs but also... be gentle ;) code will be optimized and more features will be added.
+Let me know if you try it or find bugs but also... be gentle ;) code will be optimized and more features will be added.
 
 **Current Features:**
 - Parse Mach-O Header
@@ -40,9 +40,11 @@ _Note: as of now, this has initially been tested against x86, x86_64, arm64, and
 - Packer detection
 - ...
 
-
 ## Usage and examples
-You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in.
+You can either use it from command line or import it as a module in your python code, and call each function individually to parse only the structures you are interested in. You can install it directly via `pip` and use it programmatically or from command line, or use it as standalone script
+```
+pip install machofile
+```
 
 ### Module version
 It expects to be supplied with either a file path or a data buffer to parse.
