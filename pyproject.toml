@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "machofile"
-version = "2025.07.31"
+version = "2025.08.05"
 description = "A Python module to parse Mach-O binary files"
 readme = "README.md"
 license = "MIT"
@@ -50,7 +50,7 @@ machofile = "machofile:main"
 packages = ["machofile"]
 
 [tool.setuptools.package-data]
-machofile = ["*.md", "LICENSE"]
+machofile = ["*.md", "LICENSE", "doc/*.md"]
 
 [tool.setuptools.package-dir]
 machofile = "."

@@ -160,7 +160,7 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # } CS_CodeDirectory
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2025.07.31"
+__version__ = "2025.08.05"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
@@ -652,8 +652,11 @@ class UniversalMachO:
         if self.is_fat:
             return list(self.architectures.keys())
         else:
-            # For single arch, just return a simple architecture name for now
-            return ["single_arch"]
+            # For single arch, extract the actual architecture name from the Mach-O header
+            header = self.macho.get_macho_header()
+            cputype = header["cputype"]
+            cpusubtype = header["cpusubtype"]
+            return [self._get_arch_name(cputype, cpusubtype)]
     
     def get_macho_for_arch(self, arch_name):
         """Get MachO instance for specific architecture."""
@@ -667,65 +670,475 @@ class UniversalMachO:
             return None
     
     # Delegation methods - return data for all architectures or specific arch
-    def get_general_info(self, arch=None):
+    def get_general_info(self, arch=None, formatted=False):
         """Get general info. If arch specified, return for that arch only."""
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
-            return macho_instance.get_general_info() if macho_instance else None
+            return macho_instance.get_general_info(formatted=formatted) if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_general_info() 
+            return {arch: macho.get_general_info(formatted=formatted) 
                    for arch, macho in self.architectures.items()}
         else:
-            return self.macho.get_general_info()
+            return self.macho.get_general_info(formatted=formatted)
     
-    def get_macho_header(self, arch=None):
+    def get_macho_header(self, arch=None, formatted=False):
         """Get Mach-O header. If arch specified, return for that arch only."""
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
-            return macho_instance.get_macho_header() if macho_instance else None
+            return macho_instance.get_macho_header(formatted=formatted) if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_macho_header() 
+            return {arch: macho.get_macho_header(formatted=formatted) 
                    for arch, macho in self.architectures.items()}
         else:
-            return self.macho.get_macho_header()
+            return self.macho.get_macho_header(formatted=formatted)
     
-    def get_imported_functions(self, arch=None):
+    def get_imported_functions(self, arch=None, formatted=False):
         """Get imported functions. If arch specified, return for that arch only."""
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
-            return macho_instance.get_imported_functions() if macho_instance else None
+            return macho_instance.get_imported_functions(formatted=formatted) if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_imported_functions() 
+            return {arch: macho.get_imported_functions(formatted=formatted) 
                    for arch, macho in self.architectures.items()}
         else:
-            return self.macho.get_imported_functions()
+            return self.macho.get_imported_functions(formatted=formatted)
     
-    def get_exported_symbols(self, arch=None):
+    def get_exported_symbols(self, arch=None, formatted=False):
         """Get exported symbols. If arch specified, return for that arch only."""
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
-            return macho_instance.get_exported_symbols() if macho_instance else None
+            return macho_instance.get_exported_symbols(formatted=formatted) if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_exported_symbols() 
+            return {arch: macho.get_exported_symbols(formatted=formatted) 
                    for arch, macho in self.architectures.items()}
         else:
-            return self.macho.get_exported_symbols()
+            return self.macho.get_exported_symbols(formatted=formatted)
     
-    def get_similarity_hashes(self, arch=None):
+    def get_similarity_hashes(self, arch=None, formatted=False):
         """Get similarity hashes. If arch specified, return for that arch only."""
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
-            return macho_instance.get_similarity_hashes() if macho_instance else None
+            return macho_instance.get_similarity_hashes(formatted=formatted) if macho_instance else None
         
         if self.is_fat:
-            return {arch: macho.get_similarity_hashes() 
+            result = {arch: macho.get_similarity_hashes(formatted=formatted) 
+                     for arch, macho in self.architectures.items()}
+            
+            # Add combined similarity hashes for FAT binaries
+            result["combined"] = self._get_combined_similarity_hashes()
+            
+            return result
+        else:
+            return self.macho.get_similarity_hashes(formatted=formatted)
+    
+    def _get_combined_similarity_hashes(self):
+        """Get combined similarity hashes by merging data from all architectures."""
+        if not self.is_fat:
+            return None
+            
+        # Collect all imports from all architectures
+        all_imports = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'imported_functions') and macho_instance.imported_functions:
+                for dylib, imports in macho_instance.imported_functions.items():
+                    for imp in imports:
+                        all_imports.append(imp.strip().lower())
+        
+        # Collect all exports from all architectures
+        all_exports = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'exported_symbols') and macho_instance.exported_symbols:
+                for dylib, exports in macho_instance.exported_symbols.items():
+                    for exp in exports:
+                        all_exports.append(exp.lower())
+        
+        # Collect all dylibs from all architectures
+        all_dylibs = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'dylib_names') and macho_instance.dylib_names:
+                for dylib in macho_instance.dylib_names:
+                    all_dylibs.append(dylib.decode().lower())
+        
+        # Calculate combined hashes
+        combined_hashes = {}
+
+        # Combined dylib hash
+        if all_dylibs:
+            sorted_dylibs = sorted(list(dict.fromkeys(all_dylibs)))
+            combined_hashes["dylib_hash"] = md5(",".join(sorted_dylibs).encode()).hexdigest()
+        else:
+            combined_hashes["dylib_hash"] = None
+                            
+        # Combined entitlement hash - collect entitlements from all architectures
+        all_entitlements = []
+        for macho_instance in self.architectures.values():
+            if hasattr(macho_instance, 'code_signature_info') and macho_instance.code_signature_info:
+                entitlements_info = macho_instance.code_signature_info.get('entitlements_info', {})
+                entitlements = entitlements_info.get('entitlements', {})
+                for entitlement_key, entitlement_data in entitlements.items():
+                    # Always include the entitlement key
+                    all_entitlements.append(entitlement_key.strip().lower())
+                    
+                    # For array entitlements, also include the array values
+                    if entitlement_data.get('type') == 'array' and 'value' in entitlement_data:
+                        array_values = entitlement_data['value']
+                        if isinstance(array_values, list):
+                            for value in array_values:
+                                all_entitlements.append(value.strip().lower())
+        
+        if all_entitlements:
+            sorted_entitlements = sorted(list(dict.fromkeys(all_entitlements)))
+            combined_hashes["entitlement_hash"] = md5(",".join(sorted_entitlements).encode()).hexdigest()
+        else:
+            combined_hashes["entitlement_hash"] = None
+        
+        # Combined export hash
+        if all_exports:
+            sorted_exports = sorted(list(dict.fromkeys(all_exports)))
+            combined_hashes["export_hash"] = md5(",".join(sorted_exports).encode()).hexdigest()
+        else:
+            combined_hashes["export_hash"] = None   
+
+        # Combined import hash
+        if all_imports:
+            sorted_imports = sorted(list(dict.fromkeys(all_imports)))
+            combined_hashes["import_hash"] = md5(",".join(sorted_imports).encode()).hexdigest()
+        else:
+            combined_hashes["import_hash"] = None
+
+        # Combined symhash - collect symbols from all architectures
+        all_symbols = []
+        for macho_instance in self.architectures.values():
+            symbols = self._extract_symbols_from_macho(macho_instance)
+            all_symbols.extend(symbols)
+        
+        if all_symbols:
+            sorted_symbols = sorted(list(dict.fromkeys(all_symbols)))
+            combined_hashes["symhash"] = md5(",".join(sorted_symbols).encode()).hexdigest()
+        else:
+            combined_hashes["symhash"] = None
+        
+        return combined_hashes
+    
+    def get_dylib_hash(self, arch=None, formatted=False):
+        """Get dylib hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_dylib_hash(formatted=formatted)
+            return None
+        else:
+            if self.is_fat:
+                # Return combined dylib hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("dylib_hash") if combined_hashes else None
+            else:
+                return self.macho.get_dylib_hash(formatted=formatted)
+
+    def get_import_hash(self, arch=None, formatted=False):
+        """Get import hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_import_hash(formatted=formatted)
+            return None
+        else:
+            if self.is_fat:
+                # Return combined import hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("import_hash") if combined_hashes else None
+            else:
+                return self.macho.get_import_hash(formatted=formatted)
+
+    def get_export_hash(self, arch=None, formatted=False):
+        """Get export hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_export_hash(formatted=formatted)
+            return None
+        else:
+            if self.is_fat:
+                # Return combined export hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("export_hash") if combined_hashes else None
+            else:
+                return self.macho.get_export_hash(formatted=formatted)
+
+    def get_entitlement_hash(self, arch=None, formatted=False):
+        """Get entitlement hash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_entitlement_hash(formatted=formatted)
+            return None
+        else:
+            if self.is_fat:
+                # Return combined entitlement hash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("entitlement_hash") if combined_hashes else None
+            else:
+                return self.macho.get_entitlement_hash(formatted=formatted)
+
+    def get_symhash(self, arch=None, formatted=False):
+        """Get symhash for specific architecture or combined for all architectures."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                return macho_instance.get_symhash(formatted=formatted)
+            return None
+        else:
+            if self.is_fat:
+                # Return combined symhash for FAT binaries
+                combined_hashes = self._get_combined_similarity_hashes()
+                return combined_hashes.get("symhash") if combined_hashes else None
+            else:
+                return self.macho.get_symhash(formatted=formatted)
+    
+    def get_load_commands(self, arch=None, formatted=False):
+        """Get load commands. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                load_commands = getattr(macho_instance, 'load_commands', None)
+                if formatted and load_commands:
+                    return macho_instance.format_load_commands_for_display(load_commands)
+                return load_commands
+            return None
+        
+        if self.is_fat:
+            result = {}
+            for arch_name, macho_instance in self.architectures.items():
+                load_commands = getattr(macho_instance, 'load_commands', None)
+                if formatted and load_commands:
+                    result[arch_name] = macho_instance.format_load_commands_for_display(load_commands)
+                else:
+                    result[arch_name] = load_commands
+            return result
+        else:
+            load_commands = getattr(self.macho, 'load_commands', None)
+            if formatted and load_commands:
+                return self.macho.format_load_commands_for_display(load_commands)
+            return load_commands
+    
+    def get_load_commands_set(self, arch=None, formatted=False):
+        """Get load commands set. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                load_commands_set = getattr(macho_instance, 'load_commands_set', None)
+                if formatted and load_commands_set:
+                    return sorted([macho_instance.format_load_command(cmd) for cmd in load_commands_set])
+                return load_commands_set
+            return None
+        
+        if self.is_fat:
+            result = {}
+            for arch_name, macho_instance in self.architectures.items():
+                load_commands_set = getattr(macho_instance, 'load_commands_set', None)
+                if formatted and load_commands_set:
+                    result[arch_name] = sorted([macho_instance.format_load_command(cmd) for cmd in load_commands_set])
+                else:
+                    result[arch_name] = load_commands_set
+            return result
+        else:
+            load_commands_set = getattr(self.macho, 'load_commands_set', None)
+            if formatted and load_commands_set:
+                return sorted([self.macho.format_load_command(cmd) for cmd in load_commands_set])
+            return load_commands_set
+    
+    def get_segments(self, arch=None, formatted=False):
+        """Get segments. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'segments', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'segments', None) 
                    for arch, macho in self.architectures.items()}
         else:
-            return self.macho.get_similarity_hashes()
+            return getattr(self.macho, 'segments', None)
+    
+    def get_dylib_commands(self, arch=None, formatted=False):
+        """Get dylib commands. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'dylib_commands', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'dylib_commands', None) 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'dylib_commands', None)
+    
+    def get_dylib_names(self, arch=None, formatted=False):
+        """Get dylib names. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'dylib_names', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'dylib_names', None) 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'dylib_names', None)
+    
+    def get_uuid(self, arch=None, formatted=False):
+        """Get UUID. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'uuid', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'uuid', None) 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'uuid', None)
+    
+    def get_entry_point(self, arch=None, formatted=False):
+        """Get entry point. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'entry_point', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'entry_point', None) 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'entry_point', None)
+    
+    def get_version_info(self, arch=None, formatted=False):
+        """Get version info. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            if macho_instance:
+                version_info = getattr(macho_instance, 'version_info', None)
+                if formatted and version_info:
+                    return macho_instance.format_version_info_for_display(version_info)
+                return version_info
+            return None
+        
+        if self.is_fat:
+            result = {}
+            for arch_name, macho_instance in self.architectures.items():
+                version_info = getattr(macho_instance, 'version_info', None)
+                if formatted and version_info:
+                    result[arch_name] = macho_instance.format_version_info_for_display(version_info)
+                else:
+                    result[arch_name] = version_info
+            return result
+        else:
+            version_info = getattr(self.macho, 'version_info', None)
+            if formatted and version_info:
+                return self.macho.format_version_info_for_display(version_info)
+            return version_info
+    
+    def get_code_signature_info(self, arch=None, formatted=False):
+        """Get code signature info. If arch specified, return for that arch only."""
+        if arch:
+            macho_instance = self.get_macho_for_arch(arch)
+            return getattr(macho_instance, 'code_signature_info', None) if macho_instance else None
+        
+        if self.is_fat:
+            return {arch: getattr(macho, 'code_signature_info', None) 
+                   for arch, macho in self.architectures.items()}
+        else:
+            return getattr(self.macho, 'code_signature_info', None)
+    
+    def _extract_symbols_from_macho(self, macho_instance):
+        """Extract symbols from a MachO instance for combined symhash calculation."""
+        symbols = []
+        
+        try:
+            # Save current file position
+            original_pos = macho_instance.f.tell()
+            
+            # Reset to beginning of this MachO's data
+            if hasattr(macho_instance, 'offset') and macho_instance.offset is not None:
+                macho_instance.f.seek(macho_instance.offset)
+            else:
+                macho_instance.f.seek(0)
+            
+            magic = struct.unpack("I", macho_instance.f.read(4))[0]
+            is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+            byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+            
+            # Adjust the position to skip cputype and cpusubtype
+            macho_instance.f.seek(12, 1)
+            ncmds = struct.unpack("I", macho_instance.f.read(4))[0]
+            if is_64_bit:
+                macho_instance.f.seek(12, 1)
+            else:
+                macho_instance.f.seek(8, 1)
+            
+            symtab = None
+            for _ in range(ncmds):
+                cmd_start = macho_instance.f.tell()
+                cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, macho_instance.f.read(8))
+                rest_of_cmd = macho_instance.f.read(cmdsize - 8)
+                full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+                if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                    symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+                macho_instance.f.seek(cmd_start + cmdsize)
+            
+            if not symtab:
+                return symbols
+            
+            symoff = symtab[2]
+            nsyms = symtab[3]
+            stroff = symtab[4]
+            strsize = symtab[5]
+            
+            macho_instance.f.seek(stroff)
+            string_table = macho_instance.f.read(strsize)
+            macho_instance.f.seek(symoff)
+            if is_64_bit:
+                nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
+                nlist_size = struct.calcsize(nlist_fmt)
+            else:
+                nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
+                nlist_size = struct.calcsize(nlist_fmt)
+            
+            for idx in range(nsyms):
+                macho_instance.f.seek(symoff + idx * nlist_size)
+                entry = macho_instance.f.read(nlist_size)
+                if len(entry) != nlist_size:
+                    continue
+                if is_64_bit:
+                    n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+                else:
+                    n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+                # Skip STAB/debug symbols
+                if n_type & N_STAB != 0:
+                    continue
+                # Only external
+                if not (n_type & N_EXT):
+                    continue
+                # Only undefined
+                if (n_type & N_TYPE) != N_UNDF:
+                    continue
+                if n_strx == 0:
+                    continue
+                str_offset = n_strx
+                if str_offset < len(string_table):
+                    name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
+                    if not name:
+                        continue
+                    symbol_name = name.decode(errors="replace")
+                    symbols.append(symbol_name)
+            
+            # Restore original file position
+            macho_instance.f.seek(original_pos)
+            
+        except Exception:
+            # If we can't extract symbols, return empty list
+            pass
+        
+        return symbols
     
     # Attribute delegation for CLI compatibility
     @property
@@ -815,6 +1228,24 @@ class UniversalMachO:
                    for arch_name, macho_instance in self.architectures.items()}
         else:
             return getattr(self.macho, 'exported_symbols', None)
+    
+    @property
+    def entitlements(self):
+        """Get entitlements from code signature info."""
+        if self.is_fat:
+            entitlements_dict = {}
+            for arch_name, macho_instance in self.architectures.items():
+                if hasattr(macho_instance, 'code_signature_info') and macho_instance.code_signature_info:
+                    entitlements_info = macho_instance.code_signature_info.get('entitlements_info', {})
+                    entitlements_dict[arch_name] = entitlements_info.get('entitlements', {})
+                else:
+                    entitlements_dict[arch_name] = {}
+            return entitlements_dict
+        else:
+            if hasattr(self.macho, 'code_signature_info') and self.macho.code_signature_info:
+                entitlements_info = self.macho.code_signature_info.get('entitlements_info', {})
+                return entitlements_info.get('entitlements', {})
+            return {}
 
 class MachO:
     """A Mach-O representation.
@@ -1087,7 +1518,7 @@ class MachO:
             # Return 0 if we can't read the segment data
             return 0.0
     
-    def get_general_info(self):
+    def get_general_info(self, formatted=False):
         """Get general information about a Mach-O file.
 
         Returns:
@@ -1115,7 +1546,7 @@ class MachO:
         }
         return info_dict
 
-    def get_macho_header(self):
+    def get_macho_header(self, formatted=False):
         """Get the Mach-O header.
 
         Returns:
@@ -1152,6 +1583,8 @@ class MachO:
             "flags": header[6] & 0xFFFFFFFF,      # uint32_t - bitmask, must be unsigned
         }
 
+        if formatted:
+            return self.format_header_for_display(header_dict)
         return header_dict
 
 
@@ -1988,24 +2421,62 @@ class MachO:
         except (struct.error, UnicodeDecodeError):
             return None
 
+#/* code signing attributes of a process */
+#define CS_VALID                    0x00000001  /* dynamically valid */
+#define CS_ADHOC                    0x00000002  /* ad hoc signed */
+#define CS_GET_TASK_ALLOW           0x00000004  /* has get-task-allow entitlement */
+#define CS_INSTALLER                0x00000008  /* has installer entitlement */
+
+#define CS_FORCED_LV                0x00000010  /* Library Validation required by Hardened System Policy */
+#define CS_INVALID_ALLOWED          0x00000020  /* (macOS Only) Page invalidation allowed by task port policy */
+
+#define CS_HARD                     0x00000100  /* don't load invalid pages */
+#define CS_KILL                     0x00000200  /* kill process if it becomes invalid */
+#define CS_CHECK_EXPIRATION         0x00000400  /* force expiration checking */
+#define CS_RESTRICT                 0x00000800  /* tell dyld to treat restricted */
+
+#define CS_ENFORCEMENT              0x00001000  /* require enforcement */
+#define CS_REQUIRE_LV               0x00002000  /* require library validation */
+#define CS_ENTITLEMENTS_VALIDATED   0x00004000  /* code signature permits restricted entitlements */
+#define CS_NVRAM_UNRESTRICTED       0x00008000  /* has com.apple.rootless.restricted-nvram-variables.heritable entitlement */
+
+#define CS_RUNTIME                  0x00010000  /* Apply hardened runtime policies */
+#define CS_LINKER_SIGNED            0x00020000  /* Automatically signed by the linker */
+
+
+    # Flags adjusted based on
+    # https://developer.apple.com/documentation/security/seccodesignatureflags
+    # https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/osfmk/kern/cs_blobs.h#L35
     def _decode_signing_flags(self, flags):
         """Decode code signing flags to human-readable format."""
+        # keeping the original flag_meanings for reference
+        # flag_meanings = {
+        #     0x1: 'Host',
+        #     0x2: 'Adhoc',
+        #     0x4: 'ForceHard',
+        #     0x8: 'Kill',
+        #     0x10: 'Hard',
+        #     0x20: 'Runtime',
+        #     0x40: 'LinkerSigned',
+        #     0x100: 'AllowUnsignedExecutables',
+        #     0x200: 'DebuggingAllowed',
+        #     0x400: 'JustMyCode',
+        #     0x800: 'Restrict',
+        #     0x1000: 'Enforcement',
+        #     0x2000: 'LibraryValidation'
+        # }
         flag_meanings = {
-            0x1: 'Host',
-            0x2: 'Adhoc',
-            0x4: 'ForceHard',
-            0x8: 'Kill',
-            0x10: 'Hard',
-            0x20: 'Runtime',
-            0x40: 'LinkerSigned',
-            0x100: 'AllowUnsignedExecutables',
-            0x200: 'DebuggingAllowed',
-            0x400: 'JustMyCode',
-            0x800: 'Restrict',
-            0x1000: 'Enforcement',
-            0x2000: 'LibraryValidation'
+            0x00000001: 'Host',
+            0x00000002: 'Adhoc',
+            0x00000100: 'Hard',
+            0x00000200: 'Kill',
+            0x00000400: 'CheckExpiration',
+            0x00001000: 'Enforcement',
+            0x00002000: 'RequireLV',
+            0x00010000: 'Runtime',
+            0x00020000: 'LinkerSigned'
         }
-        
+
         active_flags = []
         for flag_value, flag_name in flag_meanings.items():
             if flags & flag_value:
@@ -2048,7 +2519,7 @@ class MachO:
         
         return 'Signed (code directory only)'
 
-    def get_imported_functions(self):
+    def get_imported_functions(self, formatted=False):
         """Extract imported functions from the Mach-O file.
 
         Returns:
@@ -2152,7 +2623,7 @@ class MachO:
         return imported_functions_by_dylib
 
 
-    def get_exported_symbols(self):
+    def get_exported_symbols(self, formatted=False):
         """Extract exports using export trie with default filtering"""
         exports = {}
         
@@ -2565,7 +3036,7 @@ class MachO:
             del exported_symbols_by_dylib["<unknown>"]
         return exported_symbols_by_dylib
 
-    def get_import_hash(self):
+    def get_import_hash(self, formatted=False):
         """Get the import hash of the Mach-O file.
 
         Returns:
@@ -2582,7 +3053,7 @@ class MachO:
 
         return import_hash
 
-    def get_dylib_hash(self):
+    def get_dylib_hash(self, formatted=False):
         """Get the dylib hash of the Mach-O file.
 
         Returns:
@@ -2597,7 +3068,7 @@ class MachO:
 
         return dylib_hash
 
-    def get_export_hash(self):
+    def get_export_hash(self, formatted=False):
         """Get the export hash of the Mach-O file.
 
         Returns:
@@ -2614,6 +3085,43 @@ class MachO:
         export_hash = md5(",".join(sorted_lowered_exports).encode()).hexdigest()
 
         return export_hash
+
+    # This method has been defined by Greg Lesnewich (@greglesnewich) and Jacob Latonis (@jacoblatonis)
+    # at their OBTS v7 presentation "A Better Way, YARA-X, Mach-O Feature Extraction, and Malware Similarity" 
+    # https://www.youtube.com/watch?v=kXrGvOfasps
+    def get_entitlement_hash(self, formatted=False):
+        """Get the entitlement hash of the Mach-O file.
+
+        Returns:
+            entitlement_hash: the entitlement hash of the Mach-O file.
+        """
+        if not hasattr(self, 'code_signature_info') or not self.code_signature_info:
+            return None
+            
+        entitlements_info = self.code_signature_info.get('entitlements_info', {})
+        entitlements = entitlements_info.get('entitlements', {})
+        
+        if not entitlements:
+            return None
+            
+        # Extract entitlement keys and array values, normalize them
+        sorted_lowered_entitlements = []
+        for entitlement_key, entitlement_data in entitlements.items():
+            # The entitlement name is the entitlement key
+            sorted_lowered_entitlements.append(entitlement_key.strip().lower())
+            
+            # For array entitlements, also include the array values
+            if entitlement_data.get('type') == 'array' and 'value' in entitlement_data:
+                array_values = entitlement_data['value']
+                if isinstance(array_values, list):
+                    for value in array_values:
+                        sorted_lowered_entitlements.append(value.strip().lower())
+        
+        sorted_lowered_entitlements = sorted(sorted_lowered_entitlements)
+        sorted_lowered_entitlements = list(dict.fromkeys(sorted_lowered_entitlements))
+        entitlement_hash = md5(",".join(sorted_lowered_entitlements).encode()).hexdigest()
+
+        return entitlement_hash
 
     def get_symhash_dict(self):
         """Get the symhash for the Mach-O file, following the original Anomali Labs/CRITS logic.
@@ -2708,7 +3216,7 @@ class MachO:
         symhash_dict[entity_string] = symhash
         return symhash_dict
 
-    def get_symhash(self):
+    def get_symhash(self, formatted=False):
         """Get the symhash for the current Mach-O entity (first/only arch,
             not supporting FAT files yet).
 
@@ -2720,7 +3228,7 @@ class MachO:
             return list(d.values())[0]
         return None
     
-    def get_similarity_hashes(self):
+    def get_similarity_hashes(self, formatted=False):
         """Get the similarity hashes of the Mach-O file.
 
         This method is used to get different available similarity hashes of
@@ -2730,13 +3238,14 @@ class MachO:
         Returns:
             similarity_hashes: A dictionary containing the similarity hashes
                 of the Mach-O file. Currently implemented are: dylib_hash,
-                import_hash, export_hash, and symhash.
+                import_hash, export_hash, entitlement_hash, and symhash.
         """
         similarity_hashes = {}
 
         similarity_hashes["dylib_hash"] = self.get_dylib_hash()
-        similarity_hashes["import_hash"] = self.get_import_hash()
+        similarity_hashes["entitlement_hash"] = self.get_entitlement_hash()
         similarity_hashes["export_hash"] = self.get_export_hash()
+        similarity_hashes["import_hash"] = self.get_import_hash()
         similarity_hashes["symhash"] = self.get_symhash()
 
         return similarity_hashes
@@ -2777,177 +3286,58 @@ def collect_all_data(macho, args, target_arch=None, raw=True):
     
     # General info
     if args.all or args.general_info:
-        data['general_info'] = macho.get_general_info(target_arch)
+        data['general_info'] = macho.get_general_info(target_arch, formatted=not raw)
     
     # Header
     if args.all or args.header:
-        raw_header = macho.get_macho_header(target_arch)
-        if raw and raw_header is not None:
-            data['header'] = raw_header
-        elif raw_header is not None:
-            # Apply formatting
-            if isinstance(raw_header, dict) and 'magic' in raw_header:
-                # Single architecture case
-                if target_arch:
-                    macho_instance = macho.get_macho_for_arch(target_arch)
-                else:
-                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
-                if macho_instance:
-                    data['header'] = macho_instance.format_header_for_display(raw_header)
-                else:
-                    data['header'] = raw_header
-            elif isinstance(raw_header, dict):
-                # Multi-architecture case
-                formatted_data = {}
-                for arch_name, arch_header in raw_header.items():
-                    if isinstance(arch_header, dict) and 'magic' in arch_header:
-                        macho_instance = macho.get_macho_for_arch(arch_name)
-                        if macho_instance:
-                            formatted_data[arch_name] = macho_instance.format_header_for_display(arch_header)
-                        else:
-                            formatted_data[arch_name] = arch_header
-                    else:
-                        formatted_data[arch_name] = arch_header
-                data['header'] = formatted_data
-            else:
-                data['header'] = raw_header
+        data['header'] = macho.get_macho_header(target_arch, formatted=not raw)
     
     # Load commands
     if args.all or args.load_cmd_t:
-        raw_load_commands = get_arch_data('load_commands')
-        if raw or raw_load_commands is None:
-            data['load_commands'] = raw_load_commands
-        else:
-            # Apply formatting
-            if isinstance(raw_load_commands, list) and raw_load_commands:
-                # Single architecture case
-                if target_arch:
-                    macho_instance = macho.get_macho_for_arch(target_arch)
-                else:
-                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
-                if macho_instance:
-                    data['load_commands'] = macho_instance.format_load_commands_for_display(raw_load_commands)
-                else:
-                    data['load_commands'] = raw_load_commands
-            elif isinstance(raw_load_commands, dict):
-                # Multi-architecture case
-                formatted_data = {}
-                for arch_name, arch_load_commands in raw_load_commands.items():
-                    if isinstance(arch_load_commands, list):
-                        macho_instance = macho.get_macho_for_arch(arch_name)
-                        if macho_instance:
-                            formatted_data[arch_name] = macho_instance.format_load_commands_for_display(arch_load_commands)
-                        else:
-                            formatted_data[arch_name] = arch_load_commands
-                    else:
-                        formatted_data[arch_name] = arch_load_commands
-                data['load_commands'] = formatted_data
-            else:
-                data['load_commands'] = raw_load_commands
-        
-        # Load commands set
-        raw_load_commands_set = get_arch_data('load_commands_set')
-        if raw or raw_load_commands_set is None:
-            data['load_commands_set'] = raw_load_commands_set
-        else:
-            # Apply formatting
-            if isinstance(raw_load_commands_set, set) and raw_load_commands_set:
-                # Single architecture case
-                if target_arch:
-                    macho_instance = macho.get_macho_for_arch(target_arch)
-                else:
-                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
-                if macho_instance:
-                    data['load_commands_set'] = sorted([macho_instance.format_load_command(cmd) for cmd in raw_load_commands_set])
-                else:
-                    data['load_commands_set'] = sorted(list(raw_load_commands_set))
-            elif isinstance(raw_load_commands_set, dict):
-                # Multi-architecture case
-                formatted_data = {}
-                for arch_name, arch_set in raw_load_commands_set.items():
-                    if isinstance(arch_set, set):
-                        macho_instance = macho.get_macho_for_arch(arch_name)
-                        if macho_instance:
-                            formatted_data[arch_name] = sorted([macho_instance.format_load_command(cmd) for cmd in arch_set])
-                        else:
-                            formatted_data[arch_name] = sorted(list(arch_set))
-                    else:
-                        formatted_data[arch_name] = arch_set
-                data['load_commands_set'] = formatted_data
-            else:
-                data['load_commands_set'] = raw_load_commands_set
+        data['load_commands'] = macho.get_load_commands(target_arch, formatted=not raw)
+        data['load_commands_set'] = macho.get_load_commands_set(target_arch, formatted=not raw)
     
     # Segments
     if args.all or args.segments:
-        data['segments'] = get_arch_data('segments')
+        data['segments'] = macho.get_segments(target_arch, formatted=not raw)
     
     # Dylib info
     if args.all or args.dylib:
-        data['dylib_commands'] = get_arch_data('dylib_commands')
-        data['dylib_names'] = get_arch_data('dylib_names')
+        data['dylib_commands'] = macho.get_dylib_commands(target_arch, formatted=not raw)
+        data['dylib_names'] = macho.get_dylib_names(target_arch, formatted=not raw)
     
     # UUID
     if args.all or args.uuid:
-        data['uuid'] = get_arch_data('uuid')
+        data['uuid'] = macho.get_uuid(target_arch, formatted=not raw)
     
     # Entry point
     if args.all or args.entry_point:
-        data['entry_point'] = get_arch_data('entry_point')
+        data['entry_point'] = macho.get_entry_point(target_arch, formatted=not raw)
     
     # Version info
     if args.all or args.version:
-        raw_version_info = get_arch_data('version_info')
-        if raw or raw_version_info is None:
-            data['version_info'] = raw_version_info
-        else:
-            # Apply formatting
-            if isinstance(raw_version_info, dict) and 'platform_cmd' in raw_version_info:
-                # Single architecture case
-                if target_arch:
-                    macho_instance = macho.get_macho_for_arch(target_arch)
-                else:
-                    macho_instance = macho.macho if hasattr(macho, 'macho') else list(macho.architectures.values())[0] if macho.is_fat else macho
-                if macho_instance:
-                    data['version_info'] = macho_instance.format_version_info_for_display(raw_version_info)
-                else:
-                    data['version_info'] = raw_version_info
-            elif isinstance(raw_version_info, dict):
-                # Multi-architecture case
-                formatted_data = {}
-                for arch_name, arch_version_info in raw_version_info.items():
-                    if isinstance(arch_version_info, dict) and 'platform_cmd' in arch_version_info:
-                        macho_instance = macho.get_macho_for_arch(arch_name)
-                        if macho_instance:
-                            formatted_data[arch_name] = macho_instance.format_version_info_for_display(arch_version_info)
-                        else:
-                            formatted_data[arch_name] = arch_version_info
-                    else:
-                        formatted_data[arch_name] = arch_version_info
-                data['version_info'] = formatted_data
-            else:
-                data['version_info'] = raw_version_info
+        data['version_info'] = macho.get_version_info(target_arch, formatted=not raw)
     
     # Code signature
     if args.all or args.signature:
-        data['code_signature_info'] = get_arch_data('code_signature_info')
+        data['code_signature_info'] = macho.get_code_signature_info(target_arch, formatted=not raw)
     
     # Imports
     if args.all or args.imports:
-        data['imported_functions'] = macho.get_imported_functions(target_arch)
+        data['imported_functions'] = macho.get_imported_functions(target_arch, formatted=not raw)
     
     # Exports  
     if args.all or args.exports:
-        data['exported_symbols'] = macho.get_exported_symbols(target_arch)
+        data['exported_symbols'] = macho.get_exported_symbols(target_arch, formatted=not raw)
     
     # Similarity hashes
     if args.all or args.similarity:
-        data['similarity_hashes'] = macho.get_similarity_hashes(target_arch)
+        data['similarity_hashes'] = macho.get_similarity_hashes(target_arch, formatted=not raw)
     
     # Add architecture info for context
-    if macho.is_fat:
-        data['architectures'] = macho.get_architectures()
-        if target_arch:
-            data['target_architecture'] = target_arch
+    data['architectures'] = macho.get_architectures()
+    if target_arch:
+        data['target_architecture'] = target_arch
     
     return data
 
@@ -2977,7 +3367,7 @@ def print_dict(d, indent_level=1):
                     print(f"{indent}\t{item}")
         else:
             if v is not None:
-                print(f"{indent}{k + ':':<13}{v}")
+                print(f"{indent}{k + ':':<18}{v}")
 
 def print_list(l):
     for i in l:
@@ -3006,7 +3396,7 @@ def print_list_dict_as_table(dict_list):
 
 # --- CLI Main Entrypoint ---
 def main():
-    parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
+    parser = argparse.ArgumentParser(description=f"Parse Mach-O binary structures. (version {__version__})")
     
     # Required arguments
     required = parser.add_argument_group('required arguments')
@@ -3069,7 +3459,7 @@ def main():
         "-u", "--uuid", action="store_true", help="Print UUID"
     )
     data_group.add_argument(
-        "-v", "--version", action="store_true", help="Print version information"
+        "-v", "--version", action="store_true", help="Print Mach-O binary version information"
     )
     
     # Filter options
@@ -3107,9 +3497,12 @@ def main():
         print(json.dumps(json_data, indent=2))
         return
     
-    # Show architectures info if FAT binary and no specific arch requested
-    if macho.is_fat and not target_arch:
-        print(f"\n[Universal Binary - Architectures: {', '.join(available_archs)}]")
+    # Show architectures info if no specific arch requested
+    if not target_arch:
+        if macho.is_fat:
+            print(f"\n[Universal Binary - Architectures: {', '.join(available_archs)}]")
+        else:
+            print(f"\n[Single Architecture Binary - Architecture: {', '.join(available_archs)}]")
 
     def print_section_for_arch(section_name, data_getter, *args_check):
         """Print a section for specific arch or all archs."""
