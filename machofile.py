@@ -652,8 +652,11 @@ class UniversalMachO:
         if self.is_fat:
             return list(self.architectures.keys())
         else:
-            # For single arch, just return a simple architecture name for now
-            return ["single_arch"]
+            # For single arch, extract the actual architecture name from the Mach-O header
+            header = self.macho.get_macho_header()
+            cputype = header["cputype"]
+            cpusubtype = header["cpusubtype"]
+            return [self._get_arch_name(cputype, cpusubtype)]
     
     def get_macho_for_arch(self, arch_name):
         """Get MachO instance for specific architecture."""
@@ -3106,10 +3109,9 @@ def collect_all_data(macho, args, target_arch=None, raw=True):
         data['similarity_hashes'] = macho.get_similarity_hashes(target_arch)
     
     # Add architecture info for context
-    if macho.is_fat:
-        data['architectures'] = macho.get_architectures()
-        if target_arch:
-            data['target_architecture'] = target_arch
+    data['architectures'] = macho.get_architectures()
+    if target_arch:
+        data['target_architecture'] = target_arch
     
     return data
 
@@ -3269,9 +3271,12 @@ def main():
         print(json.dumps(json_data, indent=2))
         return
     
-    # Show architectures info if FAT binary and no specific arch requested
-    if macho.is_fat and not target_arch:
-        print(f"\n[Universal Binary - Architectures: {', '.join(available_archs)}]")
+    # Show architectures info if no specific arch requested
+    if not target_arch:
+        if macho.is_fat:
+            print(f"\n[Universal Binary - Architectures: {', '.join(available_archs)}]")
+        else:
+            print(f"\n[Single Architecture Binary - Architecture: {', '.join(available_archs)}]")
 
     def print_section_for_arch(section_name, data_getter, *args_check):
         """Print a section for specific arch or all archs."""
