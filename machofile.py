@@ -160,7 +160,7 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # } CS_CodeDirectory
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2025.07.31"
+__version__ = "2025.08.05"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
@@ -3006,7 +3006,7 @@ def print_list_dict_as_table(dict_list):
 
 # --- CLI Main Entrypoint ---
 def main():
-    parser = argparse.ArgumentParser(description="Parse Mach-O file structures.")
+    parser = argparse.ArgumentParser(description=f"Parse Mach-O binary structures. (version {__version__})")
     
     # Required arguments
     required = parser.add_argument_group('required arguments')
@@ -3069,7 +3069,7 @@ def main():
         "-u", "--uuid", action="store_true", help="Print UUID"
     )
     data_group.add_argument(
-        "-v", "--version", action="store_true", help="Print version information"
+        "-v", "--version", action="store_true", help="Print Mach-O binary version information"
     )
     
     # Filter options
