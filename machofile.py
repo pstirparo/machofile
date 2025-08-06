@@ -593,21 +593,11 @@ class UniversalMachO:
         magic = struct.unpack(">I", self.f.read(4))[0]
         nfat_arch = struct.unpack(">I", self.f.read(4))[0]
         
-        # Determine if we need to swap bytes
-        swap_bytes = magic in {FAT_CIGAM, FAT_CIGAM_64}
-        endian = "<" if swap_bytes else ">"
-        
-        if swap_bytes:
-            nfat_arch = struct.unpack("<I", struct.pack(">I", nfat_arch))[0]
-        
         # Read FAT arch entries
         for _ in range(nfat_arch):
             fat_arch_data = self.f.read(20)  # fat_arch is 20 bytes
             
-            if swap_bytes:
-                cputype, cpusubtype, offset, size, align = struct.unpack("<5I", fat_arch_data)
-            else:
-                cputype, cpusubtype, offset, size, align = struct.unpack(">5I", fat_arch_data)
+            cputype, cpusubtype, offset, size, align = struct.unpack(">5I", fat_arch_data)
             
             # Extract architecture name
             arch_name = self._get_arch_name(cputype, cpusubtype)
