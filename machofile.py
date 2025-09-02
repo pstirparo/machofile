@@ -1284,6 +1284,7 @@ class MachO:
         else:
             self.file_path = None
             self.data = data
+            self.file_path = None
 
         self.f = io.BytesIO(self.data)
 
