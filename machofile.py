@@ -731,10 +731,14 @@ class UniversalMachO:
         if arch:
             macho_instance = self.get_macho_for_arch(arch)
             return macho_instance.get_general_info(formatted=formatted) if macho_instance else None
-        
+
         if self.is_fat:
-            return {arch: macho.get_general_info(formatted=formatted) 
-                   for arch, macho in self.architectures.items()}
+            # Include FAT-level info for the entire FAT binary
+            result = {"fat": self._get_fat_general_info()}
+            # Add per-architecture info
+            for arch_name, macho in self.architectures.items():
+                result[arch_name] = macho.get_general_info(formatted=formatted)
+            return result
         else:
             return self.macho.get_general_info(formatted=formatted)
     
@@ -791,11 +795,33 @@ class UniversalMachO:
         else:
             return self.macho.get_similarity_hashes(formatted=formatted)
     
+    def _get_fat_general_info(self):
+        """Get general info for the entire FAT binary."""
+        if self.file_path is None:
+            filename = "-"
+        else:
+            filename = os.path.basename(self.file_path)
+
+        md5_hash = md5()
+        sha256_hash = sha256()
+        sha1_hash = sha1()
+        md5_hash.update(self.data)
+        sha1_hash.update(self.data)
+        sha256_hash.update(self.data)
+
+        return {
+            "Filename": filename,
+            "Filesize": len(self.data),
+            "MD5": md5_hash.hexdigest(),
+            "SHA1": sha1_hash.hexdigest(),
+            "SHA256": sha256_hash.hexdigest(),
+        }
+
     def _get_combined_similarity_hashes(self):
         """Get combined similarity hashes by merging data from all architectures."""
         if not self.is_fat:
             return None
-            
+
         # Collect all imports from all architectures
         all_imports = []
         for macho_instance in self.architectures.values():

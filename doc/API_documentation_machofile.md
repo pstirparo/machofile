@@ -29,13 +29,21 @@ After parsing with `macho.parse()`, you can extract the same information that th
 
 **General Information** (`-g` / `--general_info`):
 ```python
-# Raw data (default)
+# Raw data (default) - for single-architecture binaries
 general_info = macho.get_general_info()
 # Returns: {'Filename': str, 'Filesize': int, 'MD5': str, 'SHA1': str, 'SHA256': str}
 
+# For Universal (FAT) binaries, includes 'fat' key with overall file info
+general_info = macho.get_general_info()
+# Returns: {
+#   'fat': {'Filename': str, 'Filesize': int, 'MD5': str, 'SHA1': str, 'SHA256': str},
+#   'x86_64': {'Filename': str, 'Filesize': int, 'MD5': str, 'SHA1': str, 'SHA256': str},
+#   'arm64': {'Filename': str, 'Filesize': int, 'MD5': str, 'SHA1': str, 'SHA256': str}
+# }
+
 # Formatted data (same as raw for general info)
 general_info = macho.get_general_info(formatted=True)
-# Returns: {'Filename': str, 'Filesize': int, 'MD5': str, 'SHA1': str, 'SHA256': str}
+# Returns: Same format as above
 ```
 
 **Mach-O Header** (`-hdr` / `--header`):
@@ -211,13 +219,18 @@ imports_arm64 = macho.get_imported_functions(arch='arm64')
 macho_x86 = macho.get_macho_for_arch('x86_64')
 ```
 
-When accessing methods on a Universal binary without specifying an architecture, 
+When accessing methods on a Universal binary without specifying an architecture,
 the data is returned as a dictionary with architecture names as keys:
 
 ```python
 # For Universal binaries:
 segments = macho.get_segments()  # {'x86_64': [...], 'arm64': [...]}
 uuid = macho.get_uuid()         # {'x86_64': 'uuid-string', 'arm64': 'uuid-string'}
+
+# General info includes 'fat' key with overall file hashes and size:
+general_info = macho.get_general_info()
+# {'fat': {'Filename': ..., 'Filesize': ..., 'MD5': ..., 'SHA1': ..., 'SHA256': ...},
+#  'x86_64': {...}, 'arm64': {...}}
 ```
 
 ## Complete List of Available Methods
