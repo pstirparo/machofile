@@ -75,7 +75,7 @@ You can use `machofile` also directly as a CLI tool if you installed it via `pip
 usage: machofile [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g] 
                     [-hdr] [-i] [-l] [-seg] [-sig] [-sim] [-u] [-v] [--arch ARCH]
 
-Parse Mach-O binary structures. (version 2025.08.05)
+Parse Mach-O binary structures. (version 2026.02.04)
 
 options:
   -h, --help          show this help message and exit
@@ -224,35 +224,40 @@ Example output:
             hash_algorithm:   Unknown (335609868)
             identifier:       onmac.unspecified.installer
 
+[Imported Libraries]
+        /usr/lib/libgcc_s.1.dylib
+        /usr/lib/libSystem.B.dylib
+
 [Imported Functions]
+        (Sources: CF=chained_fixups, BO=bind, WB=weak_bind, LB=lazy_bind, ST=symtab)
         /usr/lib/libSystem.B.dylib:
-                __NSGetExecutablePath
-                ___stderrp
-                _dlerror
-                _dlopen
-                _dlsym
-                _exit
-                _fclose
-                _fopen
-                _fprintf
-                _fputs$UNIX2003
-                _free
-                _fwrite$UNIX2003
-                _getenv
-                _getpid
-                _getpwnam
-                _lstat
-                _mbstowcs
-                _memcpy
-                _memset
-                _setenv$UNIX2003
-                _setlocale
-                _snprintf
-                _stat
-                _strchr
-                _strdup
-                _strlen
-                _unsetenv$UNIX2003
+                __NSGetExecutablePath [ST]
+                ___stderrp [ST]
+                _dlerror [ST]
+                _dlopen [ST]
+                _dlsym [ST]
+                _exit [ST]
+                _fclose [ST]
+                _fopen [ST]
+                _fprintf [ST]
+                _fputs$UNIX2003 [ST]
+                _free [ST]
+                _fwrite$UNIX2003 [ST]
+                _getenv [ST]
+                _getpid [ST]
+                _getpwnam [ST]
+                _lstat [ST]
+                _mbstowcs [ST]
+                _memcpy [ST]
+                _memset [ST]
+                _setenv$UNIX2003 [ST]
+                _setlocale [ST]
+                _snprintf [ST]
+                _stat [ST]
+                _strchr [ST]
+                _strdup [ST]
+                _strlen [ST]
+                _unsetenv$UNIX2003 [ST]
 
 [Exported Symbols]
         <unknown>:
@@ -348,7 +353,7 @@ JSON output supports all the same analysis options as the standard output (`-a`,
 ## Credits
 Those are the people that I would like to thank for being the inspiration that led me to write this module:
 - Ero Carrera ([@erocarrera](https://twitter.com/erocarrera)) for writing and maintaining the [pefile](https://github.com/erocarrera/pefile/tree/master) module
-- Patrick Wardle ([@patrickwardle](https://twitter.com/patrickwardle)) for the great work in sharing his macOS malware analysis and research, and brigning to life [OBTS](https://objectivebythesea.org/) :)
+- Patrick Wardle ([@patrickwardle](https://twitter.com/patrickwardle)) for the great work in sharing his macOS malware analysis and research, and bringing to life [OBTS](https://objectivebythesea.org/) :)
 - Greg Lesnewich ([@greg-l.bsky.social](https://bsky.app/profile/greg-l.bsky.social)) and Jacob Latonis ([@jacoblatonis.me](https://bsky.app/profile/jacoblatonis.me)) for their work on mach-o similarity and the continuous, nerding and enlightening brainstormings sessions on Mach-O binary format. Check you their OBTS v7 presentation on YT.
 
 ## Reference/Documentation links:
