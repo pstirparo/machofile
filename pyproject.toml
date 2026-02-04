@@ -50,10 +50,13 @@ machofile = "machofile:main"
 packages = ["machofile"]
 
 [tool.setuptools.package-data]
-machofile = ["*.md", "LICENSE", "doc/*.md"]
+machofile = ["README.md", "LICENSE", "doc/API_documentation_machofile.md"]
 
 [tool.setuptools.package-dir]
 machofile = "."
+
+[tool.setuptools.exclude-package-data]
+"*" = ["_local", "_local/*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "machofile.__version__"} 
