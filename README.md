@@ -1,4 +1,7 @@
 # machofile
+
+[![Downloads](https://static.pepy.tech/badge/machofile)](https://pepy.tech/project/machofile)
+
 **machofile** is a module to parse Mach-O binary files, with a focus on malware analysis and reverse engineering.
 
 Inspired by Ero Carrera's pefile, this module aims to provide similar capabilities but for Mach-O binaries instead. 
@@ -349,6 +352,14 @@ For applications that need to process raw numeric values, use the `--raw` flag:
 - `--raw`: Output raw numeric values instead of formatted strings (must be used with `-j`)
 
 JSON output supports all the same analysis options as the standard output (`-a`, `-hd`, `-l`, `-sg`, etc.) and works with both single-architecture and Universal (FAT) binaries.
+
+## Sponsored by
+
+<a href="https://rationaledge.io">
+  <img src="assets/rationaledge-logo.png" alt="RationalEdge" width="200">
+</a>
+
+Development of **machofile** is sponsored by [RationalEdge](https://rationaledge.io).
 
 ## Credits
 Those are the people that I would like to thank for being the inspiration that led me to write this module:
