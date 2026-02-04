@@ -160,7 +160,7 @@ Copyright (c) 2023-2025 Pasquale Stirparo <pstirparo@threatresearch.ch>
 # } CS_CodeDirectory
 
 __author__ = "Pasquale Stirparo"
-__version__ = "2025.08.05"
+__version__ = "2026.02.04"
 __contact__ = "pstirparo@threatresearch.ch"
 
 from hashlib import sha256
@@ -192,6 +192,62 @@ EXPORT_TRIE_FORMAT = "II"
 VERSION_COMMAND_FORMAT = "II"
 MAIN_COMMAND_FORMAT = "QQ"
 CODE_SIGNATURE_FORMAT = "II"
+
+# LC_DYLD_CHAINED_FIXUPS format (linkedit_data_command)
+# struct linkedit_data_command {
+#     uint32_t cmd;        /* LC_DYLD_CHAINED_FIXUPS */
+#     uint32_t cmdsize;    /* sizeof(struct linkedit_data_command) */
+#     uint32_t dataoff;    /* file offset of data in __LINKEDIT segment */
+#     uint32_t datasize;   /* file size of data in __LINKEDIT segment */
+# };
+CHAINED_FIXUPS_FORMAT = "II"  # dataoff, datasize (cmd and cmdsize already read)
+
+# struct dyld_chained_fixups_header {
+#     uint32_t fixups_version;    /* 0 */
+#     uint32_t starts_offset;     /* offset of dyld_chained_starts_in_image */
+#     uint32_t imports_offset;    /* offset of imports table in chain_data */
+#     uint32_t symbols_offset;    /* offset of symbol strings in chain_data */
+#     uint32_t imports_count;     /* number of imported symbol bindings */
+#     uint32_t imports_format;    /* DYLD_CHAINED_IMPORT* */
+#     uint32_t symbols_format;    /* 0 => uncompressed, 1 => zlib compressed */
+# };
+CHAINED_FIXUPS_HEADER_FORMAT = "IIIIIII"
+
+# Chained fixups import format constants
+DYLD_CHAINED_IMPORT = 1           # dyld_chained_import (4 bytes)
+DYLD_CHAINED_IMPORT_ADDEND = 2    # dyld_chained_import_addend (8 bytes)
+DYLD_CHAINED_IMPORT_ADDEND64 = 3  # dyld_chained_import_addend64 (16 bytes)
+
+# Bind opcodes for LC_DYLD_INFO / LC_DYLD_INFO_ONLY
+# Each opcode byte is split: high 4 bits = opcode, low 4 bits = immediate value.
+BIND_OPCODE_MASK = 0xF0
+BIND_IMMEDIATE_MASK = 0x0F
+
+BIND_OPCODE_DONE = 0x00
+BIND_OPCODE_SET_DYLIB_ORDINAL_IMM = 0x10
+BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB = 0x20
+BIND_OPCODE_SET_DYLIB_SPECIAL_IMM = 0x30
+BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM = 0x40
+BIND_OPCODE_SET_TYPE_IMM = 0x50
+BIND_OPCODE_SET_ADDEND_SLEB = 0x60
+BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB = 0x70
+BIND_OPCODE_ADD_ADDR_ULEB = 0x80
+BIND_OPCODE_DO_BIND = 0x90
+BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB = 0xA0
+BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED = 0xB0
+BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB = 0xC0
+
+# Special library ordinal values for bind opcodes
+BIND_SPECIAL_DYLIB_SELF = 0
+BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE = -1
+BIND_SPECIAL_DYLIB_FLAT_LOOKUP = -2
+
+# Import source identifiers for provenance tracking
+IMPORT_SOURCE_CHAINED_FIXUPS = "chained_fixups"
+IMPORT_SOURCE_BIND_OPCODES = "bind_opcodes"
+IMPORT_SOURCE_WEAK_BIND_OPCODES = "weak_bind_opcodes"
+IMPORT_SOURCE_LAZY_BIND_OPCODES = "lazy_bind_opcodes"
+IMPORT_SOURCE_SYMTAB = "symtab"
 
 STRUCT_SIZEOF_TYPES = {
     "x": 1,
@@ -746,7 +802,12 @@ class UniversalMachO:
             if hasattr(macho_instance, 'imported_functions') and macho_instance.imported_functions:
                 for dylib, imports in macho_instance.imported_functions.items():
                     for imp in imports:
-                        all_imports.append(imp.strip().lower())
+                        # Handle both new format (dict with 'name') and legacy format (string)
+                        if isinstance(imp, dict):
+                            name = imp.get('name', '')
+                        else:
+                            name = imp
+                        all_imports.append(name.strip().lower())
         
         # Collect all exports from all architectures
         all_exports = []
@@ -1296,6 +1357,7 @@ class MachO:
         self.dylib_names = []
         self.dyld_info = {}
         self.dyld_export_trie = {}
+        self.dyld_chained_fixups = {}
         self.uuid = None
         self.entry_point = None
         self.version_info = None
@@ -1314,10 +1376,11 @@ class MachO:
         self.header = self.get_macho_header()
 
         # Consolidated load command parsing
-        (self.load_commands, self.load_commands_set, self.segments, 
-        self.dylib_commands, self.dylib_names, self.dyld_info, 
-        self.dyld_export_trie, self.uuid, self.entry_point, 
-        self.version_info, self.code_signature_data) = self.parse_all_load_commands()
+        (self.load_commands, self.load_commands_set, self.segments,
+        self.dylib_commands, self.dylib_names, self.dyld_info,
+        self.dyld_export_trie, self.dyld_chained_fixups, self.uuid,
+        self.entry_point, self.version_info,
+        self.code_signature_data) = self.parse_all_load_commands()
 
         self.code_signature_info = self.parse_code_signature()
         self.imported_functions = self.get_imported_functions()
@@ -1607,6 +1670,7 @@ class MachO:
         dylib_names = []
         dyld_info = None
         dyld_export_trie = None
+        dyld_chained_fixups = None
         uuid = None
         entry_point = None
         version_info = None
@@ -1729,15 +1793,28 @@ class MachO:
 
             # Process LC_DYLD_EXPORTS_TRIE
             elif cmd == LOAD_COMMAND_TYPES["LC_DYLD_EXPORTS_TRIE"]:
-                
+
                 # Read LC_DYLD_EXPORTS_TRIE structure (linkedit_data_command format)
                 export_trie_fmt = byte_order + EXPORT_TRIE_FORMAT
                 export_data = self.f.read(struct.calcsize(export_trie_fmt))
                 data_off, data_size = struct.unpack(export_trie_fmt, export_data)
-                
+
                 dyld_export_trie = {
                     'data_off': data_off,
                     'data_size': data_size
+                }
+
+            # Process LC_DYLD_CHAINED_FIXUPS (modern format, macOS 12+/iOS 15+)
+            elif cmd == LOAD_COMMAND_TYPES["LC_DYLD_CHAINED_FIXUPS"]:
+
+                # Read LC_DYLD_CHAINED_FIXUPS structure (linkedit_data_command format)
+                chained_fmt = byte_order + CHAINED_FIXUPS_FORMAT
+                chained_data = self.f.read(struct.calcsize(chained_fmt))
+                dataoff, datasize = struct.unpack(chained_fmt, chained_data)
+
+                dyld_chained_fixups = {
+                    'dataoff': dataoff,
+                    'datasize': datasize
                 }
 
             # Process LC_UUID
@@ -1851,9 +1928,9 @@ class MachO:
         if "LC_SEGMENT" in load_commands_set:
             load_commands_set.remove("LC_SEGMENT")
 
-        return (load_commands, load_commands_set, segments, dylib_commands, 
-                dylib_names, dyld_info, dyld_export_trie, uuid, entry_point, 
-                version_info, code_signature_data)
+        return (load_commands, load_commands_set, segments, dylib_commands,
+                dylib_names, dyld_info, dyld_export_trie, dyld_chained_fixups,
+                uuid, entry_point, version_info, code_signature_data)
     
     def parse_code_signature(self):
         """Parse code signature and entitlements from LC_CODE_SIGNATURE.
@@ -2520,107 +2597,80 @@ class MachO:
         return 'Signed (code directory only)'
 
     def get_imported_functions(self, formatted=False):
-        """Extract imported functions from the Mach-O file.
+        """Extract imported functions from the Mach-O file with provenance tracking.
+
+        This method uses a comprehensive approach, parsing imports from all available
+        sources and tracking which load command(s) provided each import.
+
+        Import sources (in order of preference):
+        1. LC_DYLD_CHAINED_FIXUPS - Modern format (macOS 12+/iOS 15+)
+        2. LC_DYLD_INFO / LC_DYLD_INFO_ONLY - Legacy opcode format
+        3. LC_SYMTAB - Symbol table undefined symbols
 
         Returns:
-            imported_functions: dict mapping dylib name to list of imported symbols.
+            dict: Dictionary mapping dylib name to list of import dicts, where each
+                  import dict contains 'name' and 'sources' keys.
         """
-        imported_functions_by_dylib = {}
-        # Build a list of dylib names in the order they appear
+        imports = {}
+
+        # Build dylib ordinal list (1-indexed) for symtab parsing
         dylib_ordinals = []
         for d in self.dylib_names:
-            # decode if bytes
             if isinstance(d, bytes):
                 dylib_ordinals.append(d.decode(errors="replace"))
             else:
                 dylib_ordinals.append(str(d))
-        # Add a fallback for symbols with ordinal 0
-        imported_functions_by_dylib["<unknown>"] = []
 
-        self.f.seek(0)
-        magic = struct.unpack("I", self.f.read(4))[0]
-        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
-        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"  # endianness
+        # Source 1: LC_DYLD_CHAINED_FIXUPS (modern format)
+        chained_imports = self._parse_chained_fixups_imports()
+        self._merge_imports(imports, chained_imports)
 
-        # Adjust the position to skip cputype and cpusubtype
-        self.f.seek(12, 1)
-        ncmds = struct.unpack("I", self.f.read(4))[0]
-        if is_64_bit:
-            self.f.seek(12, 1)
-        else:
-            self.f.seek(8, 1)
+        # Source 2: LC_DYLD_INFO / LC_DYLD_INFO_ONLY (legacy opcode format)
+        if hasattr(self, 'dyld_info') and self.dyld_info:
+            # Parse bind opcodes (regular bindings - resolved at load time)
+            bind_off = self.dyld_info.get('bind_off', 0)
+            bind_size = self.dyld_info.get('bind_size', 0)
+            if bind_off > 0 and bind_size > 0:
+                try:
+                    self.f.seek(bind_off)
+                    bind_data = self.f.read(bind_size)
+                    bind_imports = self._parse_bind_opcodes(bind_data, IMPORT_SOURCE_BIND_OPCODES)
+                    self._merge_imports(imports, bind_imports)
+                except (IOError, struct.error):
+                    pass
 
-        symtab = None
-        dysymtab = None
-        # Find LC_SYMTAB and LC_DYSYMTAB
-        for _ in range(ncmds):
-            cmd_start = self.f.tell()
-            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
-            rest_of_cmd = self.f.read(cmdsize - 8)
-            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
-            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
-                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
-            elif cmd == LOAD_COMMAND_TYPES["LC_DYSYMTAB"]:
-                dysymtab = struct.unpack(byte_order + DYSYMTAB_COMMAND_FORMAT, full_cmd[:struct.calcsize(byte_order + DYSYMTAB_COMMAND_FORMAT)])
-            self.f.seek(cmd_start + cmdsize)
+            # Parse weak_bind opcodes (weak bindings - can be overridden)
+            weak_bind_off = self.dyld_info.get('weak_bind_off', 0)
+            weak_bind_size = self.dyld_info.get('weak_bind_size', 0)
+            if weak_bind_off > 0 and weak_bind_size > 0:
+                try:
+                    self.f.seek(weak_bind_off)
+                    weak_bind_data = self.f.read(weak_bind_size)
+                    weak_imports = self._parse_bind_opcodes(weak_bind_data, IMPORT_SOURCE_WEAK_BIND_OPCODES)
+                    self._merge_imports(imports, weak_imports)
+                except (IOError, struct.error):
+                    pass
 
-        if not symtab or not dysymtab:
-            return imported_functions_by_dylib  # Could not find symbol tables
+            # Parse lazy_bind opcodes (lazy bindings - resolved on first use)
+            lazy_bind_off = self.dyld_info.get('lazy_bind_off', 0)
+            lazy_bind_size = self.dyld_info.get('lazy_bind_size', 0)
+            if lazy_bind_off > 0 and lazy_bind_size > 0:
+                try:
+                    self.f.seek(lazy_bind_off)
+                    lazy_bind_data = self.f.read(lazy_bind_size)
+                    lazy_imports = self._parse_bind_opcodes(lazy_bind_data, IMPORT_SOURCE_LAZY_BIND_OPCODES)
+                    self._merge_imports(imports, lazy_imports)
+                except (IOError, struct.error):
+                    pass
 
-        # Unpack symtab
-        symoff = symtab[2]
-        nsyms = symtab[3]
-        stroff = symtab[4]
-        strsize = symtab[5]
+        # Source 3: LC_SYMTAB undefined symbols (always parse for completeness)
+        symtab_imports = self._parse_symtab_imports(dylib_ordinals)
+        self._merge_imports(imports, symtab_imports)
 
-        # Unpack dysymtab
-        iundefsym = dysymtab[6]
-        nundefsym = dysymtab[7]
+        # Remove empty dylib entries
+        imports = {k: v for k, v in imports.items() if v}
 
-        # Read string table
-        self.f.seek(stroff)
-        string_table = self.f.read(strsize)
-
-        # Read symbol table
-        self.f.seek(symoff)
-        if is_64_bit:
-            nlist_fmt = byte_order + "IbbHQ"  # n_strx, n_type, n_sect, n_desc, n_value
-            nlist_size = struct.calcsize(nlist_fmt)
-        else:
-            nlist_fmt = byte_order + "IbbHI"  # n_strx, n_type, n_sect, n_desc, n_value
-            nlist_size = struct.calcsize(nlist_fmt)
-
-        # Only process undefined symbols (imported functions)
-        for idx in range(iundefsym, iundefsym + nundefsym):
-            self.f.seek(symoff + idx * nlist_size)
-            entry = self.f.read(nlist_size)
-            if len(entry) != nlist_size:
-                continue
-            if is_64_bit:
-                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
-            else:
-                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
-            if n_strx == 0:
-                continue
-            str_offset = n_strx
-            if str_offset < len(string_table):
-                name = string_table[str_offset:string_table.find(b"\x00", str_offset)]
-                if not name:
-                    continue
-                symbol_name = name.decode(errors="replace")
-                # Extract library ordinal from n_desc (high 8 bits)
-                lib_ordinal = (n_desc >> 8) & 0xFF
-                if lib_ordinal == 0 or lib_ordinal > len(dylib_ordinals):
-                    imported_functions_by_dylib["<unknown>"].append(symbol_name)
-                else:
-                    dylib_name = dylib_ordinals[lib_ordinal - 1]
-                    if dylib_name not in imported_functions_by_dylib:
-                        imported_functions_by_dylib[dylib_name] = []
-                    imported_functions_by_dylib[dylib_name].append(symbol_name)
-        # Remove <unknown> if empty
-        if not imported_functions_by_dylib["<unknown>"]:
-            del imported_functions_by_dylib["<unknown>"]
-        return imported_functions_by_dylib
+        return imports
 
 
     def get_exported_symbols(self, formatted=False):
@@ -2908,6 +2958,468 @@ class MachO:
         
         return value, consumed
 
+    def _read_sleb128(self, data, offset):
+        """Read a SLEB128 (signed) encoded integer from data at offset.
+
+        SLEB128 is used for signed values in bind opcodes (e.g., addends).
+        The sign bit is the second-highest bit of the last byte.
+
+        Args:
+            data: Byte data to read from.
+            offset: Starting offset in data.
+
+        Returns:
+            tuple: (value, bytes_consumed)
+        """
+        value = 0
+        shift = 0
+        consumed = 0
+
+        while offset + consumed < len(data):
+            byte = data[offset + consumed]
+            consumed += 1
+
+            value |= (byte & 0x7F) << shift
+            shift += 7
+
+            # Check if this is the last byte (MSB is 0)
+            if (byte & 0x80) == 0:
+                # Sign extend if the sign bit (bit 6 of last byte) is set
+                if shift < 64 and (byte & 0x40):
+                    value |= -(1 << shift)
+                break
+
+            # Prevent infinite loops on malformed data
+            if shift >= 64:
+                break
+
+        return value, consumed
+
+    def _add_import(self, imports, lib_ordinal, symbol_name, source_name, dylib_ordinals):
+        """Helper to add an import to the imports dictionary with provenance tracking.
+
+        Args:
+            imports: Dictionary to add import to.
+            lib_ordinal: Library ordinal (1-indexed, or special values 0, -1, -2).
+            symbol_name: Name of the imported symbol.
+            source_name: Provenance identifier.
+            dylib_ordinals: List of dylib names (0-indexed).
+        """
+        if not symbol_name:
+            return
+
+        # Resolve dylib name from ordinal
+        if lib_ordinal == BIND_SPECIAL_DYLIB_SELF:
+            dylib_name = "<self>"
+        elif lib_ordinal == BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE:
+            dylib_name = "<main_executable>"
+        elif lib_ordinal == BIND_SPECIAL_DYLIB_FLAT_LOOKUP:
+            dylib_name = "<flat_lookup>"
+        elif lib_ordinal > 0 and lib_ordinal <= len(dylib_ordinals):
+            dylib_name = dylib_ordinals[lib_ordinal - 1]
+        else:
+            dylib_name = "<unknown>"
+
+        # Initialize dylib entry if needed
+        if dylib_name not in imports:
+            imports[dylib_name] = []
+
+        # Check if symbol already exists for this dylib
+        for entry in imports[dylib_name]:
+            if entry['name'] == symbol_name:
+                # Add source if not already present
+                if source_name not in entry['sources']:
+                    entry['sources'].append(source_name)
+                return
+
+        # Add new import entry
+        imports[dylib_name].append({
+            'name': symbol_name,
+            'sources': [source_name]
+        })
+
+    def _merge_imports(self, target, source):
+        """Merge imports from source into target, combining provenance sources.
+
+        Args:
+            target: Target imports dictionary to merge into.
+            source: Source imports dictionary to merge from.
+        """
+        for dylib_name, import_list in source.items():
+            if dylib_name not in target:
+                target[dylib_name] = []
+
+            for import_entry in import_list:
+                # Check if symbol already exists for this dylib
+                found = False
+                for existing in target[dylib_name]:
+                    if existing['name'] == import_entry['name']:
+                        # Merge sources
+                        for src in import_entry['sources']:
+                            if src not in existing['sources']:
+                                existing['sources'].append(src)
+                        found = True
+                        break
+
+                if not found:
+                    # Add new import entry (copy to avoid reference issues)
+                    target[dylib_name].append({
+                        'name': import_entry['name'],
+                        'sources': list(import_entry['sources'])
+                    })
+
+    def _parse_bind_opcodes(self, data, source_name):
+        """Parse bind opcodes from LC_DYLD_INFO bind/weak_bind/lazy_bind data.
+
+        This implements a state machine that processes bind opcodes to extract
+        imported symbols and their associated dylib. The opcodes modify state
+        variables, and DO_BIND operations commit the current state as an import.
+
+        Reference: mach-o/loader.h, dyld/src/ImageLoaderMachOCompressed.cpp
+
+        Args:
+            data: Raw bind opcode data bytes.
+            source_name: Provenance identifier (e.g., IMPORT_SOURCE_BIND_OPCODES).
+
+        Returns:
+            dict: Dictionary mapping dylib name to list of import dicts with
+                  'name' and 'sources' keys.
+        """
+        imports = {}
+        if not data:
+            return imports
+
+        # Build dylib ordinal list (1-indexed)
+        dylib_ordinals = []
+        for d in self.dylib_names:
+            if isinstance(d, bytes):
+                dylib_ordinals.append(d.decode(errors="replace"))
+            else:
+                dylib_ordinals.append(str(d))
+
+        # State machine variables
+        lib_ordinal = 0
+        symbol_name = None
+        segment_index = 0
+        segment_offset = 0
+        bind_type = 1  # BIND_TYPE_POINTER
+
+        # Determine pointer size from header magic
+        magic = self.header.get('magic', 0)
+        is_64_bit = magic in {MH_MAGIC_64, MH_CIGAM_64}
+        pointer_size = 8 if is_64_bit else 4
+
+        offset = 0
+        end = len(data)
+
+        while offset < end:
+            byte = data[offset]
+            opcode = byte & BIND_OPCODE_MASK
+            immediate = byte & BIND_IMMEDIATE_MASK
+            offset += 1
+
+            if opcode == BIND_OPCODE_DONE:
+                # End of stream (for lazy bindings, this resets state for next entry)
+                # Reset state for next binding in lazy_bind
+                lib_ordinal = 0
+                symbol_name = None
+                segment_index = 0
+                segment_offset = 0
+
+            elif opcode == BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
+                # Library ordinal is in immediate (0-15)
+                lib_ordinal = immediate
+
+            elif opcode == BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+                # Library ordinal from ULEB128
+                lib_ordinal, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+
+            elif opcode == BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
+                # Special ordinal: 0 = self, -1 = main exec, -2 = flat lookup
+                # Immediate is sign-extended 4-bit value
+                if immediate == 0:
+                    lib_ordinal = 0
+                else:
+                    # Sign extend 4-bit value: 0x0F -> -1, 0x0E -> -2, etc.
+                    lib_ordinal = (immediate | 0xF0) - 256
+
+            elif opcode == BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+                # Symbol name follows as null-terminated string
+                # Immediate contains symbol flags (not used for import list)
+                str_start = offset
+                while offset < end and data[offset] != 0:
+                    offset += 1
+                symbol_name = data[str_start:offset].decode('utf-8', errors='replace')
+                offset += 1  # Skip null terminator
+
+            elif opcode == BIND_OPCODE_SET_TYPE_IMM:
+                # Set binding type (pointer, text absolute, text pcrel)
+                bind_type = immediate
+
+            elif opcode == BIND_OPCODE_SET_ADDEND_SLEB:
+                # Addend from SLEB128 (not needed for import list)
+                _, consumed = self._read_sleb128(data, offset)
+                offset += consumed
+
+            elif opcode == BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+                # Segment index and offset
+                segment_index = immediate
+                segment_offset, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+
+            elif opcode == BIND_OPCODE_ADD_ADDR_ULEB:
+                # Add to segment offset
+                add_val, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+                segment_offset += add_val
+
+            elif opcode == BIND_OPCODE_DO_BIND:
+                # Commit current binding
+                self._add_import(imports, lib_ordinal, symbol_name,
+                               source_name, dylib_ordinals)
+                segment_offset += pointer_size
+
+            elif opcode == BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
+                # Bind and add address
+                self._add_import(imports, lib_ordinal, symbol_name,
+                               source_name, dylib_ordinals)
+                add_val, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+                segment_offset += pointer_size + add_val
+
+            elif opcode == BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+                # Bind and add scaled immediate
+                self._add_import(imports, lib_ordinal, symbol_name,
+                               source_name, dylib_ordinals)
+                segment_offset += pointer_size + (immediate * pointer_size)
+
+            elif opcode == BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
+                # Bind count times, skipping skip bytes each time
+                count, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+                skip, consumed = self._read_uleb128(data, offset)
+                offset += consumed
+
+                for _ in range(count):
+                    self._add_import(imports, lib_ordinal, symbol_name,
+                                   source_name, dylib_ordinals)
+                    segment_offset += pointer_size + skip
+
+        return imports
+
+    def _parse_chained_fixups_imports(self):
+        """Parse imports from LC_DYLD_CHAINED_FIXUPS data.
+
+        Chained fixups is the modern format (macOS 12+/iOS 15+) that replaces
+        LC_DYLD_INFO. It stores imports in a simple table format rather than
+        opcodes.
+
+        The structure hierarchy is:
+        - dyld_chained_fixups_header (at dataoff from load command)
+          - imports table (at imports_offset from header)
+          - symbols table (at symbols_offset from header)
+
+        Reference: mach-o/fixup-chains.h, dyld source code
+
+        Returns:
+            dict: Dictionary mapping dylib name to list of import dicts with
+                  'name' and 'sources' keys.
+        """
+        imports = {}
+
+        # Check if we have chained fixups data
+        if not hasattr(self, 'dyld_chained_fixups') or not self.dyld_chained_fixups:
+            return imports
+
+        dataoff = self.dyld_chained_fixups.get('dataoff', 0)
+        datasize = self.dyld_chained_fixups.get('datasize', 0)
+
+        if dataoff == 0 or datasize == 0:
+            return imports
+
+        # Build dylib ordinal list (1-indexed)
+        dylib_ordinals = []
+        for d in self.dylib_names:
+            if isinstance(d, bytes):
+                dylib_ordinals.append(d.decode(errors="replace"))
+            else:
+                dylib_ordinals.append(str(d))
+
+        try:
+            # Read the chained fixups header
+            self.f.seek(dataoff)
+            header_size = struct.calcsize(CHAINED_FIXUPS_HEADER_FORMAT)
+            header_data = self.f.read(header_size)
+
+            if len(header_data) < header_size:
+                return imports
+
+            (fixups_version, starts_offset, imports_offset, symbols_offset,
+             imports_count, imports_format, symbols_format) = struct.unpack(
+                CHAINED_FIXUPS_HEADER_FORMAT, header_data)
+
+            if imports_count == 0:
+                return imports
+
+            # Read symbols table (null-terminated strings)
+            self.f.seek(dataoff + symbols_offset)
+            symbols_size = datasize - symbols_offset
+            if symbols_size > 0:
+                symbols_data = self.f.read(symbols_size)
+            else:
+                symbols_data = b''
+
+            # Read and parse imports based on format
+            self.f.seek(dataoff + imports_offset)
+
+            for _ in range(imports_count):
+                lib_ordinal = 0
+                name_offset = 0
+
+                if imports_format == DYLD_CHAINED_IMPORT:
+                    # 4 bytes: lib_ordinal:8, weak_import:1, name_offset:23
+                    entry_data = self.f.read(4)
+                    if len(entry_data) < 4:
+                        break
+                    entry = struct.unpack("I", entry_data)[0]
+                    lib_ordinal = entry & 0xFF
+                    name_offset = (entry >> 9) & 0x7FFFFF
+
+                elif imports_format == DYLD_CHAINED_IMPORT_ADDEND:
+                    # 8 bytes: lib_ordinal:8, weak_import:1, name_offset:23, addend:32
+                    entry_data = self.f.read(8)
+                    if len(entry_data) < 8:
+                        break
+                    entry, _ = struct.unpack("Ii", entry_data)
+                    lib_ordinal = entry & 0xFF
+                    name_offset = (entry >> 9) & 0x7FFFFF
+
+                elif imports_format == DYLD_CHAINED_IMPORT_ADDEND64:
+                    # 16 bytes: lib_ordinal:16, weak_import:1, reserved:15, name_offset:32, addend:64
+                    entry_data = self.f.read(16)
+                    if len(entry_data) < 16:
+                        break
+                    entry, _ = struct.unpack("QQ", entry_data)
+                    lib_ordinal = entry & 0xFFFF
+                    name_offset = (entry >> 32) & 0xFFFFFFFF
+
+                else:
+                    break
+
+                # Extract symbol name from symbols table
+                if name_offset < len(symbols_data):
+                    end_offset = symbols_data.find(b'\x00', name_offset)
+                    if end_offset == -1:
+                        end_offset = len(symbols_data)
+                    symbol_name = symbols_data[name_offset:end_offset].decode(
+                        'utf-8', errors='replace')
+
+                    self._add_import(imports, lib_ordinal, symbol_name,
+                                   IMPORT_SOURCE_CHAINED_FIXUPS, dylib_ordinals)
+
+        except (IOError, struct.error, ValueError):
+            pass
+
+        return imports
+
+    def _parse_symtab_imports(self, dylib_ordinals):
+        """Parse imports from LC_SYMTAB undefined symbols.
+
+        Args:
+            dylib_ordinals: List of dylib names (0-indexed).
+
+        Returns:
+            dict: Dictionary mapping dylib name to list of import dicts.
+        """
+        imports = {}
+
+        self.f.seek(0)
+        magic = struct.unpack("I", self.f.read(4))[0]
+        is_64_bit = True if magic in {MH_MAGIC_64, MH_CIGAM_64} else False
+        byte_order = ">" if magic in {MH_CIGAM, MH_CIGAM_64} else "<"
+
+        # Skip to load commands
+        self.f.seek(12, 1)
+        ncmds = struct.unpack("I", self.f.read(4))[0]
+        if is_64_bit:
+            self.f.seek(12, 1)
+        else:
+            self.f.seek(8, 1)
+
+        symtab = None
+        dysymtab = None
+
+        # Find LC_SYMTAB and LC_DYSYMTAB
+        for _ in range(ncmds):
+            cmd_start = self.f.tell()
+            cmd, cmdsize = struct.unpack(byte_order + LOAD_COMMAND_FORMAT, self.f.read(8))
+            rest_of_cmd = self.f.read(cmdsize - 8)
+            full_cmd = struct.pack(byte_order + LOAD_COMMAND_FORMAT, cmd, cmdsize) + rest_of_cmd
+            if cmd == LOAD_COMMAND_TYPES["LC_SYMTAB"]:
+                symtab = struct.unpack(byte_order + SYMTAB_COMMAND_FORMAT,
+                                      full_cmd[:struct.calcsize(byte_order + SYMTAB_COMMAND_FORMAT)])
+            elif cmd == LOAD_COMMAND_TYPES["LC_DYSYMTAB"]:
+                dysymtab = struct.unpack(byte_order + DYSYMTAB_COMMAND_FORMAT,
+                                        full_cmd[:struct.calcsize(byte_order + DYSYMTAB_COMMAND_FORMAT)])
+            self.f.seek(cmd_start + cmdsize)
+
+        if not symtab or not dysymtab:
+            return imports
+
+        # Unpack symtab: cmd, cmdsize, symoff, nsyms, stroff, strsize
+        symoff = symtab[2]
+        stroff = symtab[4]
+        strsize = symtab[5]
+
+        # Unpack dysymtab: iundefsym is at index 6, nundefsym at index 7
+        iundefsym = dysymtab[6]
+        nundefsym = dysymtab[7]
+
+        # Read string table
+        self.f.seek(stroff)
+        string_table = self.f.read(strsize)
+
+        # Determine nlist format based on architecture
+        if is_64_bit:
+            nlist_fmt = byte_order + "IbbHQ"
+            nlist_size = struct.calcsize(nlist_fmt)
+        else:
+            nlist_fmt = byte_order + "IbbHI"
+            nlist_size = struct.calcsize(nlist_fmt)
+
+        # Process undefined symbols (imported functions)
+        for idx in range(iundefsym, iundefsym + nundefsym):
+            try:
+                self.f.seek(symoff + idx * nlist_size)
+                entry = self.f.read(nlist_size)
+                if len(entry) != nlist_size:
+                    continue
+
+                n_strx, n_type, n_sect, n_desc, n_value = struct.unpack(nlist_fmt, entry)
+
+                if n_strx == 0:
+                    continue
+
+                if n_strx < len(string_table):
+                    end_offset = string_table.find(b"\x00", n_strx)
+                    if end_offset == -1:
+                        end_offset = len(string_table)
+                    name = string_table[n_strx:end_offset]
+                    if not name:
+                        continue
+
+                    symbol_name = name.decode(errors="replace")
+                    lib_ordinal = (n_desc >> 8) & 0xFF
+
+                    self._add_import(imports, lib_ordinal, symbol_name,
+                                   IMPORT_SOURCE_SYMTAB, dylib_ordinals)
+
+            except (IOError, struct.error):
+                continue
+
+        return imports
+
     def has_export_trie(self):
         """Check if this Mach-O file has export trie data.
         
@@ -3043,10 +3555,15 @@ class MachO:
             import_hash: the import hash of the Mach-O file.
         """
         sorted_lowered_imports = []
-        
+
         for dylib, imports in self.imported_functions.items():
             for imp in imports:
-                sorted_lowered_imports.append(imp.strip().lower())
+                # Handle both new format (dict with 'name') and legacy format (string)
+                if isinstance(imp, dict):
+                    name = imp.get('name', '')
+                else:
+                    name = imp
+                sorted_lowered_imports.append(name.strip().lower())
         sorted_lowered_imports = sorted(sorted_lowered_imports)
         sorted_lowered_imports = list(dict.fromkeys(sorted_lowered_imports))
         import_hash = md5(",".join(sorted_lowered_imports).encode()).hexdigest()
@@ -3377,6 +3894,32 @@ def print_list_dict(l):
     for d in l:
         for k, v in d.items():
             print(f"\t{k + ':':<13}{v}")
+
+def print_imports_with_provenance(imports_dict):
+    """Print imported functions with provenance information.
+
+    Source abbreviations:
+    - CF: chained_fixups (LC_DYLD_CHAINED_FIXUPS)
+    - BO: bind_opcodes (LC_DYLD_INFO bind)
+    - WB: weak_bind_opcodes (LC_DYLD_INFO weak_bind)
+    - LB: lazy_bind_opcodes (LC_DYLD_INFO lazy_bind)
+    - ST: symtab (LC_SYMTAB)
+    """
+    source_abbrev = {
+        IMPORT_SOURCE_CHAINED_FIXUPS: "CF",
+        IMPORT_SOURCE_BIND_OPCODES: "BO",
+        IMPORT_SOURCE_WEAK_BIND_OPCODES: "WB",
+        IMPORT_SOURCE_LAZY_BIND_OPCODES: "LB",
+        IMPORT_SOURCE_SYMTAB: "ST"
+    }
+
+    for dylib_name, import_list in imports_dict.items():
+        print(f"\t{dylib_name}:")
+        for import_entry in import_list:
+            symbol_name = import_entry.get('name', '<unknown>')
+            sources = import_entry.get('sources', [])
+            source_str = ",".join(source_abbrev.get(s, s) for s in sources)
+            print(f"\t\t{symbol_name} [{source_str}]")
 
 def print_list_dict_as_table(dict_list):
     if not dict_list:
@@ -3799,7 +4342,55 @@ def main():
     print_section_for_arch("Version Information", get_formatted_version_info, args.all, args.version)
     print_section_for_arch("Code Signature", lambda arch: get_arch_data('code_signature_info'), args.all, args.signature)
 
-    print_section_for_arch("Imported Functions", macho.get_imported_functions, args.all, args.imports)
+    # Custom printing for imports with provenance tracking
+    def print_imports_section():
+        if not (args.all or args.imports):
+            return
+
+        data = macho.get_imported_functions(target_arch)
+
+        def print_imports_for_arch(imports_data, arch_suffix=""):
+            """Print imported libraries and functions with provenance."""
+            if arch_suffix:
+                print(f"\n[Imported Libraries - {arch_suffix}]")
+            else:
+                print(f"\n[Imported Libraries]")
+
+            if imports_data:
+                for dylib_name in imports_data.keys():
+                    print(f"\t{dylib_name}")
+            else:
+                print("\tNo imported libraries found")
+
+            if arch_suffix:
+                print(f"\n[Imported Functions - {arch_suffix}]")
+            else:
+                print(f"\n[Imported Functions]")
+            print("\t(Sources: CF=chained_fixups, BO=bind, WB=weak_bind, LB=lazy_bind, ST=symtab)")
+
+            if imports_data:
+                print_imports_with_provenance(imports_data)
+            else:
+                print("\tNo imported functions found")
+
+        if target_arch:
+            print_imports_for_arch(data, target_arch)
+        else:
+            if macho.is_fat:
+                if isinstance(data, dict):
+                    first_key = next(iter(data.keys()), None)
+                    if first_key and isinstance(data.get(first_key), dict):
+                        # FAT binary: arch -> dylib -> imports
+                        for arch, arch_data in data.items():
+                            print_imports_for_arch(arch_data, arch)
+                    else:
+                        # Single arch format
+                        print_imports_for_arch(data)
+            else:
+                print_imports_for_arch(data)
+
+    print_imports_section()
+
     print_section_for_arch("Exported Symbols", macho.get_exported_symbols, args.all, args.exports)
     print_section_for_arch("Similarity Hashes", macho.get_similarity_hashes, args.all, args.similarity)
 
