@@ -120,26 +120,39 @@ code_signature_info = macho.get_code_signature_info()
 
 **Imported Functions** (`-i` / `--imports`):
 ```python
-# Raw data (default)
 imported_functions = macho.get_imported_functions()
-# Returns: Dictionary mapping dylib names (bytes) to lists of imported function names (bytes)
-# Example: {b'/usr/lib/libSystem.B.dylib': [b'_malloc', b'_free', ...]}
+# Returns: Dictionary mapping dylib names (str) to lists of import dictionaries.
+# Each import dict contains 'name' (str) and 'sources' (list of str).
+#
+# The 'sources' list tracks provenance - which load command(s) provided the import:
+#   - 'chained_fixups': LC_DYLD_CHAINED_FIXUPS (modern format, macOS 12+/iOS 15+)
+#   - 'bind_opcodes': LC_DYLD_INFO bind opcodes (resolved at load time)
+#   - 'weak_bind_opcodes': LC_DYLD_INFO weak_bind opcodes (can be overridden)
+#   - 'lazy_bind_opcodes': LC_DYLD_INFO lazy_bind opcodes (resolved on first use)
+#   - 'symtab': LC_SYMTAB undefined symbols
+#
+# Example:
+# {
+#     '/usr/lib/libSystem.B.dylib': [
+#         {'name': '_malloc', 'sources': ['chained_fixups', 'symtab']},
+#         {'name': '_free', 'sources': ['lazy_bind_opcodes', 'symtab']},
+#         ...
+#     ]
+# }
 
-# Formatted data (same as raw for imported functions)
-imported_functions = macho.get_imported_functions(formatted=True)
-# Returns: Same format as raw data (imported functions are already human-readable)
+# Note: formatted parameter has no effect (data is already human-readable strings)
+imported_functions = macho.get_imported_functions(formatted=True)  # Same as above
 ```
 
 **Exported Symbols** (`-e` / `--exports`):
 ```python
-# Raw data (default)
 exported_symbols = macho.get_exported_symbols()
-# Returns: Dictionary mapping source names (bytes) to lists of exported symbol names (bytes)
-# Example: {b'<unknown>': [b'_main', b'start', ...]}
+# Returns: Dictionary mapping source names (str) to lists of exported symbol names (str)
+# For modern binaries with export trie: {'<export_trie>': ['_main', 'start', ...]}
+# For older binaries using symtab: {'<unknown>': ['_main', 'start', ...]}
 
-# Formatted data (same as raw for exported symbols)
-exported_symbols = macho.get_exported_symbols(formatted=True)
-# Returns: Same format as raw data (exported symbols are already human-readable)
+# Note: formatted parameter has no effect (data is already human-readable strings)
+exported_symbols = macho.get_exported_symbols(formatted=True)  # Same as above
 ```
 
 **Similarity Hashes** (`-sim` / `--similarity`):
