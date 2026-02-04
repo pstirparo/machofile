@@ -50,7 +50,7 @@ machofile = "machofile:main"
 packages = ["machofile"]
 
 [tool.setuptools.package-data]
-machofile = ["README.md", "LICENSE", "doc/API_documentation_machofile.md"]
+machofile = ["README.md", "LICENSE", "doc/*"]
 
 [tool.setuptools.package-dir]
 machofile = "."
