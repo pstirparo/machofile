@@ -356,7 +356,7 @@ JSON output supports all the same analysis options as the standard output (`-a`,
 ## Sponsored by
 
 <a href="https://rationaledge.io">
-  <img src="assets/rationaledge-logo.png" alt="RationalEdge" width="500">
+  <img src="assets/rationaledge-logo.png" alt="RationalEdge" width="400">
 </a>
 
 Development of **machofile** is sponsored by [RationalEdge](https://rationaledge.io).
