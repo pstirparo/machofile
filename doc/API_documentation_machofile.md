@@ -233,6 +233,44 @@ general_info = macho.get_general_info()
 #  'x86_64': {...}, 'arm64': {...}}
 ```
 
+### Dumping Individual Slices from Universal (FAT) Binaries
+
+You can extract and save each architecture slice from a FAT binary as a standalone Mach-O file using `dump_slices()`:
+
+```python
+import machofile
+
+macho = machofile.UniversalMachO(file_path='path/to/fat_binary')
+macho.parse()
+
+# Dump all architecture slices to a directory
+written = macho.dump_slices(output_dir='./output')
+# Returns: [('x86_64', './output/fat_binary.x86_64'), ('arm64', './output/fat_binary.arm64')]
+
+# Dump only a specific architecture
+written = macho.dump_slices(output_dir='./output', arch='arm64')
+# Returns: [('arm64', './output/fat_binary.arm64')]
+```
+
+Each dumped file is a valid standalone Mach-O binary that can be parsed independently:
+
+```python
+# Re-parse a dumped slice
+slice_macho = machofile.UniversalMachO(file_path='./output/fat_binary.arm64')
+slice_macho.parse()
+header = slice_macho.get_macho_header(formatted=True)
+```
+
+**Parameters:**
+- `output_dir` (str, required): Directory to write the extracted binaries. Created automatically if it does not exist.
+- `arch` (str, optional): If specified, dump only this architecture. Otherwise dump all architectures.
+
+**Returns:** A list of `(arch_name, output_path)` tuples for each file written.
+
+**Raises:** `ValueError` if the binary is not a FAT/Universal binary, or if the specified architecture is not found.
+
+Output files are named `<original_filename>.<arch_name>` (e.g., `mybinary.x86_64`, `mybinary.arm64`).
+
 ## Complete List of Available Methods
 
 All the following methods are available on the `UniversalMachO` instance and handle both single-architecture and Universal binaries automatically. All methods support the `formatted` parameter for human-readable output:

@@ -31,6 +31,7 @@ Let me know if you try it or find bugs but also... be gentle ;) code will be opt
 - Extract Version Information
 - Parse basic Code Signature information
 - Support for FAT (Universal) Binaries
+- Dump individual Mach-O slices from FAT (Universal) Binaries
 - JSON output support (both human-readable and raw formats)
 
 
@@ -75,8 +76,9 @@ You can use `machofile` also directly as a CLI tool if you installed it via `pip
 
 ```
 % machofile -h
-usage: machofile [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g] 
-                    [-hdr] [-i] [-l] [-seg] [-sig] [-sim] [-u] [-v] [--arch ARCH]
+usage: machofile [-h] -f FILE [-j] [--raw] [-a] [-d] [-e] [-ep] [-g]
+                    [-hdr] [-i] [-l] [-seg] [-sig] [-sim] [-u] [-v]
+                    [--arch ARCH] [--dump-dir DUMP_DIR]
 
 Parse Mach-O binary structures. (version 2026.02.04)
 
@@ -107,6 +109,10 @@ data extraction options:
 
 filter options:
   --arch ARCH         Show info for specific architecture only (for Universal binaries)
+
+dump options:
+  --dump-dir DUMP_DIR Dump individual Mach-O slices from a FAT/Universal binary
+                      to the specified directory
 ```
 
 Example output:
@@ -277,6 +283,22 @@ Example output:
         import_hash:      0bae89995ad3900987c49c0bea1d17fe
         symhash:          15e6c1aeba01be1404901f7152213779
 ```
+
+### Dumping Slices from Universal (FAT) Binaries
+When working with Universal (FAT) binaries, you can extract each architecture slice into its own standalone Mach-O file using `--dump-dir`:
+
+```bash
+# Dump all slices
+% machofile -f universal_binary --dump-dir ./output
+Dumped x86_64 -> ./output/universal_binary.x86_64
+Dumped arm64 -> ./output/universal_binary.arm64
+
+# Dump only a specific architecture (combine with --arch)
+% machofile -f universal_binary --dump-dir ./output --arch arm64
+Dumped arm64 -> ./output/universal_binary.arm64
+```
+
+Each dumped file is a valid standalone Mach-O binary. The output directory is created automatically if it does not exist. Output files are named `<original_filename>.<arch_name>`.
 
 ### JSON Output
 **machofile** supports JSON output for programmatic consumption of the parsed data. The JSON output comes in two formats:
