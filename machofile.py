@@ -795,6 +795,38 @@ class UniversalMachO:
         else:
             return self.macho.get_similarity_hashes(formatted=formatted)
     
+    def dump_slices(self, output_dir, arch=None):
+        """Dump individual Mach-O slices from a FAT binary to separate files.
+
+        Args:
+            output_dir: Directory to write the extracted binaries.
+            arch: If specified, dump only this architecture. Otherwise dump all.
+
+        Returns:
+            List of (arch_name, output_path) tuples for files written.
+        """
+        if not self.is_fat:
+            raise ValueError("Not a FAT/Universal binary, nothing to split")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        base_name = os.path.basename(self.file_path) if self.file_path else "macho"
+
+        written = []
+        archs_to_dump = [arch] if arch else list(self.architectures.keys())
+
+        for arch_name in archs_to_dump:
+            macho_instance = self.get_macho_for_arch(arch_name)
+            if macho_instance is None:
+                raise ValueError(f"Architecture '{arch_name}' not found in binary")
+
+            out_path = os.path.join(output_dir, f"{base_name}.{arch_name}")
+            with open(out_path, "wb") as fh:
+                fh.write(macho_instance.data)
+            written.append((arch_name, out_path))
+
+        return written
+
     def _get_fat_general_info(self):
         """Get general info for the entire FAT binary."""
         if self.file_path is None:
@@ -4037,6 +4069,13 @@ def main():
         "--arch", type=str, help="Show info for specific architecture only (for Universal binaries)"
     )
 
+    # Dump options
+    dump_group = parser.add_argument_group('dump options')
+    dump_group.add_argument(
+        "--dump-dir", type=str, dest="dump_dir",
+        help="Dump individual Mach-O slices from a FAT/Universal binary to the specified directory"
+    )
+
     args = parser.parse_args()
     file_path = args.file
 
@@ -4056,6 +4095,19 @@ def main():
         print(f"Available architectures: {', '.join(available_archs)}")
         return
     
+    # Handle dump mode
+    if args.dump_dir:
+        if not macho.is_fat:
+            print("Error: --dump-dir is only supported for FAT/Universal binaries.")
+            return
+        try:
+            written = macho.dump_slices(args.dump_dir, arch=target_arch)
+            for arch_name, out_path in written:
+                print(f"Dumped {arch_name} -> {out_path}")
+        except Exception as e:
+            print(f"Error dumping slices: {e}")
+        return
+
     # Handle JSON output mode
     if args.json:
         # Collect data (formatted by default, raw if --raw flag is used)
