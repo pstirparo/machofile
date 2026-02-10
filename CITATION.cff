@@ -21,6 +21,6 @@ keywords:
 repository-code: "https://github.com/pasquales/machofile"
 url: "https://github.com/pasquales/machofile"
 license: "MIT"
-version: "2026.02.04"
-date-released: 2026-02-04
+version: "2026.02.10"
+date-released: 2026-02-10
 repository-artifact: "https://pypi.org/project/machofile/" 
